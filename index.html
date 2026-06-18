@@ -12,20 +12,57 @@
       height: 100%;
       overflow: hidden;
       background: #000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
       color: #fff;
       font-family: Arial, sans-serif;
     }
+    #app {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
     canvas {
       display: block;
+      width: 100%;
+      height: 100%;
       background: #000;
+    }
+    #controls {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(6px);
+      box-sizing: border-box;
+    }
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #fff;
+    }
+    .control-row label {
+      min-width: 90px;
+      font-size: 0.95rem;
+    }
+    .control-row input[type='range'] {
+      flex: 1;
+    }
+    .control-row .speed-value {
+      min-width: 42px;
+      text-align: right;
+      font-family: monospace;
     }
   </style>
 </head>
 <body>
-  <canvas id="screen"></canvas>
+  <div id="app">
+    <canvas id="screen"></canvas>
+    <div id="controls"></div>
+  </div>
   <script>
     const canvas = document.getElementById('screen');
     const ctx = canvas.getContext('2d');
@@ -39,10 +76,17 @@
     resize();
 
     const imageFiles = [
-      'face.png',
-      'face2.png',
-      'face3.png',
-      'face4.png'
+      'blue.png',
+      'red.png',
+      'yellow.png',
+      'green.png'
+    ];
+
+    const imageLinks = [
+      null,
+      null,
+      null,
+      'https://sebastianratzenboeck.github.io/'
     ];
 
     const images = imageFiles.map((fileName) => {
@@ -54,11 +98,13 @@
     const sprites = imageFiles.map((_, index) => ({
       x: 0,
       y: 0,
-      vx: 0,
-      vy: 0,
+      dx: 0,
+      dy: 0,
+      speed: 5,
       width: 80,
       height: 80,
       imageIndex: index,
+      url: imageLinks[index] || null,
     }));
 
     function randomBetween(min, max) {
@@ -68,12 +114,15 @@
     function randomizeSprite(sprite) {
       sprite.x = randomBetween(0, canvas.width - sprite.width);
       sprite.y = randomBetween(0, canvas.height - sprite.height);
-      const speed = randomBetween(2.5, 10);
+      sprite.speed = randomBetween(2.5, 10);
       const angle = randomBetween(0, Math.PI * 2);
-      sprite.vx = Math.cos(angle) * speed;
-      sprite.vy = Math.sin(angle) * speed;
-      if (Math.abs(sprite.vx) < 1) sprite.vx = Math.sign(sprite.vx || 1) * 1.5;
-      if (Math.abs(sprite.vy) < 1) sprite.vy = Math.sign(sprite.vy || 1) * 1.5;
+      sprite.dx = Math.cos(angle);
+      sprite.dy = Math.sin(angle);
+      if (Math.abs(sprite.dx) < 0.3) sprite.dx = Math.sign(sprite.dx || 1) * 0.3;
+      if (Math.abs(sprite.dy) < 0.3) sprite.dy = Math.sign(sprite.dy || 1) * 0.3;
+      const length = Math.sqrt(sprite.dx * sprite.dx + sprite.dy * sprite.dy);
+      sprite.dx /= length;
+      sprite.dy /= length;
     }
 
     function draw() {
@@ -101,37 +150,37 @@
         const direction = a.x < b.x ? -1 : 1;
         a.x += direction * overlapX / 2;
         b.x -= direction * overlapX / 2;
-        const vx = a.vx;
-        a.vx = b.vx;
-        b.vx = vx;
+        const dx = a.dx;
+        a.dx = b.dx;
+        b.dx = dx;
       } else {
         const direction = a.y < b.y ? -1 : 1;
         a.y += direction * overlapY / 2;
         b.y -= direction * overlapY / 2;
-        const vy = a.vy;
-        a.vy = b.vy;
-        b.vy = vy;
+        const dy = a.dy;
+        a.dy = b.dy;
+        b.dy = dy;
       }
     }
 
     function update() {
       sprites.forEach((sprite) => {
-        sprite.x += sprite.vx;
-        sprite.y += sprite.vy;
+        sprite.x += sprite.dx * sprite.speed;
+        sprite.y += sprite.dy * sprite.speed;
 
         if (sprite.x + sprite.width > canvas.width) {
           sprite.x = canvas.width - sprite.width;
-          sprite.vx *= -1;
+          sprite.dx *= -1;
         } else if (sprite.x < 0) {
           sprite.x = 0;
-          sprite.vx *= -1;
+          sprite.dx *= -1;
         }
         if (sprite.y + sprite.height > canvas.height) {
           sprite.y = canvas.height - sprite.height;
-          sprite.vy *= -1;
+          sprite.dy *= -1;
         } else if (sprite.y < 0) {
           sprite.y = 0;
-          sprite.vy *= -1;
+          sprite.dy *= -1;
         }
       });
 
@@ -151,6 +200,61 @@
       draw();
       requestAnimationFrame(loop);
     }
+
+    function getCanvasClickPos(event) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) * (canvas.width / rect.width),
+        y: (event.clientY - rect.top) * (canvas.height / rect.height)
+      };
+    }
+
+    canvas.addEventListener('click', (event) => {
+      const clickPos = getCanvasClickPos(event);
+      for (const sprite of sprites) {
+        if (
+          clickPos.x >= sprite.x &&
+          clickPos.x <= sprite.x + sprite.width &&
+          clickPos.y >= sprite.y &&
+          clickPos.y <= sprite.y + sprite.height
+        ) {
+          if (sprite.url) {
+            window.open(sprite.url, '_blank');
+          }
+          break;
+        }
+      }
+    });
+
+    const controls = document.getElementById('controls');
+    sprites.forEach((sprite, index) => {
+      const row = document.createElement('div');
+      row.className = 'control-row';
+
+      const label = document.createElement('label');
+      label.textContent = imageFiles[index];
+
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = '1';
+      slider.max = '15';
+      slider.step = '0.1';
+      slider.value = sprite.speed;
+
+      const value = document.createElement('span');
+      value.className = 'speed-value';
+      value.textContent = Number(sprite.speed).toFixed(1);
+
+      slider.addEventListener('input', () => {
+        sprite.speed = parseFloat(slider.value);
+        value.textContent = sprite.speed.toFixed(1);
+      });
+
+      row.appendChild(label);
+      row.appendChild(slider);
+      row.appendChild(value);
+      controls.appendChild(row);
+    });
 
     sprites.forEach(randomizeSprite);
     loop();
