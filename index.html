@@ -100,12 +100,14 @@
       y: 0,
       dx: 0,
       dy: 0,
-      speed: 5,
+      baseSpeed: 5,
       width: 80,
       height: 80,
       imageIndex: index,
       url: imageLinks[index] || null,
     }));
+
+    let speedFactor = 1;
 
     function randomBetween(min, max) {
       return Math.random() * (max - min) + min;
@@ -114,7 +116,7 @@
     function randomizeSprite(sprite) {
       sprite.x = randomBetween(0, canvas.width - sprite.width);
       sprite.y = randomBetween(0, canvas.height - sprite.height);
-      sprite.speed = randomBetween(2.5, 10);
+      sprite.baseSpeed = randomBetween(2.5, 10);
       const angle = randomBetween(0, Math.PI * 2);
       sprite.dx = Math.cos(angle);
       sprite.dy = Math.sin(angle);
@@ -146,6 +148,9 @@
     function resolveCollision(a, b) {
       const overlapX = Math.min(a.x + a.width - b.x, b.x + b.width - a.x);
       const overlapY = Math.min(a.y + a.height - b.y, b.y + b.height - a.y);
+      const speed = a.baseSpeed;
+      a.baseSpeed = b.baseSpeed;
+      b.baseSpeed = speed;
       if (overlapX < overlapY) {
         const direction = a.x < b.x ? -1 : 1;
         a.x += direction * overlapX / 2;
@@ -165,8 +170,8 @@
 
     function update() {
       sprites.forEach((sprite) => {
-        sprite.x += sprite.dx * sprite.speed;
-        sprite.y += sprite.dy * sprite.speed;
+        sprite.x += sprite.dx * sprite.baseSpeed * speedFactor;
+        sprite.y += sprite.dy * sprite.baseSpeed * speedFactor;
 
         if (sprite.x + sprite.width > canvas.width) {
           sprite.x = canvas.width - sprite.width;
@@ -227,34 +232,33 @@
     });
 
     const controls = document.getElementById('controls');
-    sprites.forEach((sprite, index) => {
-      const row = document.createElement('div');
-      row.className = 'control-row';
+    const row = document.createElement('div');
+    row.className = 'control-row';
 
-      const label = document.createElement('label');
-      label.textContent = imageFiles[index];
+    const label = document.createElement('label');
+    label.textContent = "Speed";
 
-      const slider = document.createElement('input');
-      slider.type = 'range';
-      slider.min = '1';
-      slider.max = '15';
-      slider.step = '0.1';
-      slider.value = sprite.speed;
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0.2';
+    slider.max = '3';
+    slider.step = '0.1';
+    slider.value = '1';
 
-      const value = document.createElement('span');
-      value.className = 'speed-value';
-      value.textContent = Number(sprite.speed).toFixed(1);
+    const value = document.createElement('span');
+    value.className = 'speed-value';
+    value.textContent = Number('1').toFixed(1);
 
-      slider.addEventListener('input', () => {
-        sprite.speed = parseFloat(slider.value);
-        value.textContent = sprite.speed.toFixed(1);
-      });
-
-      row.appendChild(label);
-      row.appendChild(slider);
-      row.appendChild(value);
-      controls.appendChild(row);
+    slider.addEventListener('input', () => {
+      speedFactor = parseFloat(slider.value);
+      value.textContent = speedFactor.toFixed(1);
     });
+
+    row.appendChild(label);
+    row.appendChild(slider);
+    row.appendChild(value);
+    controls.appendChild(row);
+    
 
     sprites.forEach(randomizeSprite);
     loop();
