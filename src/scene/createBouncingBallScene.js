@@ -7,21 +7,63 @@ import {
   stepBall,
 } from './ballMotion.js';
 
-const BALL_RADIUS = 0.7;
-const TILT_SMOOTHING = 0.2;
-// World distance within which a face reacts to the cursor; beyond it (or when the
-// pointer leaves the scene) the face rests at its forward (initial) orientation.
-const LOOK_RANGE = 3;
-const MAX_LEAN = 0.6;
+const VIEW_HEIGHT = 8; // world units shown vertically (orthographic frustum)
+const DEFAULT_BALL_RADIUS = 0.5;
+const DEFAULT_TILT_SMOOTHING = 0.18;
+const DEFAULT_LOOK_RANGE = 10;
+const DEFAULT_MAX_LEAN = degreesToRadians(55);
+const MAX_LOOK_RANGE = 20;
+const MAX_SPEED_FACTOR = 4;
+const MIN_BALL_RADIUS = 0.25;
+const MAX_BALL_RADIUS = 1.35;
+const MIN_TILT_SMOOTHING = 0.02;
+const MAX_TILT_SMOOTHING = 1;
+const MIN_MAX_LEAN = degreesToRadians(10);
+const MAX_MAX_LEAN = degreesToRadians(60);
 
 const BALL_COLORS = [0xffdf2e, 0xff6b6b, 0x51cf66, 0x4dabf7, 0xcc5de8];
 const FACE_COLOR = 0x1b1b1b;
-// The face is drawn on the +Z cap of each sphere; we swing this axis toward the
-// cursor with a quaternion (no Euler angles = no gimbal twirl).
-const FORWARD = new THREE.Vector3(0, 0, 1);
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
 function randomBetween(min, max) {
   return Math.random() * (max - min) + min;
+}
+
+function degreesToRadians(degrees) {
+  return (degrees * Math.PI) / 180;
+}
+
+function readOption(getter, fallback) {
+  const value = getter?.();
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+function readBooleanOption(getter, fallback) {
+  const value = getter?.();
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+export function resolveSceneSettings(options = {}) {
+  const ballRadius = clamp(
+    readOption(options.getBallRadius, DEFAULT_BALL_RADIUS),
+    MIN_BALL_RADIUS,
+    MAX_BALL_RADIUS,
+  );
+
+  return {
+    speedFactor: clamp(readOption(options.getSpeedFactor, 1), 0, MAX_SPEED_FACTOR),
+    ballRadius,
+    lookRange: clamp(readOption(options.getLookRange, DEFAULT_LOOK_RANGE), ballRadius, MAX_LOOK_RANGE),
+    innerLookRange: ballRadius,
+    maxLean: clamp(readOption(options.getMaxLean, DEFAULT_MAX_LEAN), MIN_MAX_LEAN, MAX_MAX_LEAN),
+    tiltSmoothing: clamp(
+      readOption(options.getTiltSmoothing, DEFAULT_TILT_SMOOTHING),
+      MIN_TILT_SMOOTHING,
+      MAX_TILT_SMOOTHING,
+    ),
+    facesFollowPointer: readBooleanOption(options.getFacesFollowPointer, true),
+  };
 }
 
 function createFace(radius) {
@@ -51,16 +93,16 @@ function createBall(color) {
   root.add(lookGroup);
 
   const sphere = new THREE.Mesh(
-    new THREE.SphereGeometry(BALL_RADIUS, 48, 32),
+    new THREE.SphereGeometry(DEFAULT_BALL_RADIUS, 48, 32),
     new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.05 }),
   );
   lookGroup.add(sphere);
-  lookGroup.add(createFace(BALL_RADIUS));
+  lookGroup.add(createFace(DEFAULT_BALL_RADIUS));
 
   return {
     root,
     lookGroup,
-    state: { x: 0, y: 0, vx: 0, vy: 0, radius: BALL_RADIUS },
+    state: { x: 0, y: 0, vx: 0, vy: 0, radius: DEFAULT_BALL_RADIUS },
   };
 }
 
@@ -73,8 +115,11 @@ export function createBouncingBallScene(canvas, options = {}) {
   renderer.setClearColor(0x000000, 1);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-  camera.position.z = 9;
+  // Orthographic projection: spheres stay perfectly round at the screen edges
+  // (no perspective stretching) and, because the view is parallel, a face that
+  // points +Z reads as looking straight at the viewer from anywhere on screen.
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
+  camera.position.z = 10;
 
   const ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
   scene.add(ambientLight);
@@ -105,11 +150,15 @@ export function createBouncingBallScene(canvas, options = {}) {
 
   // Reused each frame to avoid per-frame allocations.
   const targetQuaternion = new THREE.Quaternion();
-  const lookVector = new THREE.Vector3();
+  const lookDir = new THREE.Vector3();
+  const right = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const basis = new THREE.Matrix4();
 
   function seedBallPositions() {
-    const halfWidth = bounds.width / 2 - BALL_RADIUS;
-    const halfHeight = bounds.height / 2 - BALL_RADIUS;
+    const { ballRadius } = resolveSceneSettings(options);
+    const halfWidth = Math.max(0, bounds.width / 2 - ballRadius);
+    const halfHeight = Math.max(0, bounds.height / 2 - ballRadius);
     balls.forEach((ball) => {
       ball.state.x = randomBetween(-halfWidth, halfWidth);
       ball.state.y = randomBetween(-halfHeight, halfHeight);
@@ -126,17 +175,18 @@ export function createBouncingBallScene(canvas, options = {}) {
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
     renderer.setSize(Math.floor(width * pixelRatio), Math.floor(height * pixelRatio), false);
 
-    camera.aspect = width / height || 1;
+    const aspect = width / height || 1;
+    const halfHeight = VIEW_HEIGHT / 2;
+    const halfWidth = halfHeight * aspect;
+    camera.left = -halfWidth;
+    camera.right = halfWidth;
+    camera.top = halfHeight;
+    camera.bottom = -halfHeight;
     camera.updateProjectionMatrix();
 
-    // Match the bounds to what the camera actually shows at the ball plane (z=0)
-    // so the balls bounce against the real window edges, not an inset margin.
-    const visibleHeight = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * camera.position.z;
-    bounds = {
-      ...bounds,
-      width: visibleHeight * camera.aspect,
-      height: visibleHeight,
-    };
+    // With an orthographic camera the frustum *is* the visible area, so the
+    // bounds match the window edges exactly.
+    bounds = { ...bounds, width: VIEW_HEIGHT * aspect, height: VIEW_HEIGHT };
   }
 
   function updatePointer(event) {
@@ -156,8 +206,38 @@ export function createBouncingBallScene(canvas, options = {}) {
     pointerActive = false;
   }
 
+  function applyBallSize(ball, ballRadius) {
+    ball.state.radius = ballRadius;
+    ball.lookGroup.scale.setScalar(ballRadius / DEFAULT_BALL_RADIUS);
+  }
+
+  function orientFace(ball, settings) {
+    if (pointerActive && settings.facesFollowPointer) {
+      const look = getLookDirection(pointer, ball.state, bounds, {
+        maxLean: settings.maxLean,
+        range: settings.lookRange,
+        innerRange: settings.innerLookRange,
+      });
+      lookDir.set(look.x, look.y, look.z);
+    } else {
+      lookDir.set(0, 0, 1);
+    }
+
+    // Orient the face so its +Z points along lookDir while staying upright
+    // (local up tracks world up). Unlike a minimal swing, this introduces no
+    // roll as the look direction sweeps around, so the smile never twirls.
+    right.crossVectors(WORLD_UP, lookDir).normalize();
+    up.crossVectors(lookDir, right);
+    basis.makeBasis(right, up, lookDir);
+    targetQuaternion.setFromRotationMatrix(basis);
+    ball.lookGroup.quaternion.slerp(targetQuaternion, settings.tiltSmoothing);
+  }
+
   function render() {
-    bounds.speedFactor = options.getSpeedFactor?.() ?? 1;
+    const settings = resolveSceneSettings(options);
+    bounds.speedFactor = settings.speedFactor;
+
+    balls.forEach((ball) => applyBallSize(ball, settings.ballRadius));
 
     // 1) Integrate motion and bounce off the viewport walls.
     balls.forEach((ball) => {
@@ -165,7 +245,7 @@ export function createBouncingBallScene(canvas, options = {}) {
         width: bounds.width,
         height: bounds.height,
         radius: ball.state.radius,
-        speedFactor: bounds.speedFactor,
+        speedFactor: settings.speedFactor,
       });
     });
 
@@ -185,18 +265,7 @@ export function createBouncingBallScene(canvas, options = {}) {
       ball.state.x = clamp(ball.state.x, -halfWidth + radius, halfWidth - radius);
       ball.state.y = clamp(ball.state.y, -halfHeight + radius, halfHeight - radius);
       ball.root.position.set(ball.state.x, ball.state.y, 0);
-
-      if (pointerActive) {
-        const look = getLookDirection(pointer, ball.state, bounds, {
-          maxLean: MAX_LEAN,
-          range: LOOK_RANGE,
-        });
-        lookVector.set(look.x, look.y, look.z);
-        targetQuaternion.setFromUnitVectors(FORWARD, lookVector);
-      } else {
-        targetQuaternion.identity();
-      }
-      ball.lookGroup.quaternion.slerp(targetQuaternion, TILT_SMOOTHING);
+      orientFace(ball, settings);
     });
 
     renderer.render(scene, camera);

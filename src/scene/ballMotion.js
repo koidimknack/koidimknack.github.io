@@ -21,14 +21,24 @@ export function getPointerWorldPosition(pointer, bounds) {
   };
 }
 
+function smoothstep(edge) {
+  return edge * edge * (3 - 2 * edge);
+}
+
 // Returns the unit direction the ball's face should point: tilting toward the
-// pointer (capped at `maxLean` radians), strongest right next to the ball and
-// smoothly fading to *exactly* straight ahead (+Z, the initial pose) at and
-// beyond `range`. Resting at forward when the pointer is far avoids the face
-// over-rotating to the opposite side as the ball drifts past the cursor. The
-// scene turns this into a single quaternion swing, which avoids the gimbal
-// "twirl" of easing Euler angles and never approaches the antipodal pole.
-export function getLookDirection(pointer, ball, bounds, { maxLean = 0.6, range = 3 } = {}) {
+// pointer (capped at `maxLean` radians) and resting at *exactly* straight ahead
+// (+Z) when the pointer is out of range. The turn strength is shaped by two
+// smooth falloffs so it peaks near the ball's edge:
+//   - outer: fades to 0 as the pointer reaches `range`, so a far ball rests and
+//     doesn't over-rotate as it drifts past the cursor;
+//   - inner: fades back to 0 as the pointer reaches the ball center, where the
+//     look direction is ill-defined and would otherwise make the face spin.
+export function getLookDirection(
+  pointer,
+  ball,
+  bounds,
+  { maxLean = 0.6, range = 3, innerRange = 1 } = {},
+) {
   const target = getPointerWorldPosition(pointer, bounds);
   const dx = target.x - ball.x;
   const dy = target.y - ball.y;
@@ -38,11 +48,9 @@ export function getLookDirection(pointer, ball, bounds, { maxLean = 0.6, range =
     return { x: 0, y: 0, z: 1 };
   }
 
-  // proximity ramps 1 -> 0 from the ball center out to `range` (smoothstep for
-  // gentle ends), so the face eases in near the cursor and rests far away.
-  const t = 1 - length / range;
-  const proximity = t * t * (3 - 2 * t);
-  const lean = maxLean * proximity;
+  const outer = smoothstep(1 - length / range);
+  const inner = innerRange > 0 ? smoothstep(Math.min(length / innerRange, 1)) : 1;
+  const lean = maxLean * outer * inner;
   const sin = Math.sin(lean);
 
   return {
