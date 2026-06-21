@@ -1,11 +1,29 @@
+import { clamp } from './ballMotion.js';
+
 const IMAGE_FILES = ['blue.png', 'red.png', 'yellow.png', 'green.png'];
 // Only the green face links somewhere for now; the others are decorative.
 const IMAGE_LINKS = [null, null, null, 'https://sebastianratzenboeck.github.io/'];
-const SPRITE_SIZE = 80;
+const DEFAULT_SPRITE_SIZE = 80;
+const MIN_SPRITE_SIZE = 40;
+const MAX_SPRITE_SIZE = 160;
+const MAX_SPEED_FACTOR = 4;
 const MIN_AXIS_COMPONENT = 0.3;
 
 function randomBetween(min, max) {
   return Math.random() * (max - min) + min;
+}
+
+function readOption(getter, fallback) {
+  const value = getter?.();
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+export function resolveSpriteSettings(options = {}) {
+  return {
+    speedFactor: clamp(readOption(options.getSpeedFactor, 1), 0, MAX_SPEED_FACTOR),
+    spriteSize: clamp(readOption(options.getSpriteSize, DEFAULT_SPRITE_SIZE), MIN_SPRITE_SIZE, MAX_SPRITE_SIZE),
+  };
 }
 
 function collides(a, b) {
@@ -58,8 +76,8 @@ export function createBouncingSpritesScene(canvas, options = {}) {
     dx: 0,
     dy: 0,
     baseSpeed: 5,
-    width: SPRITE_SIZE,
-    height: SPRITE_SIZE,
+    width: DEFAULT_SPRITE_SIZE,
+    height: DEFAULT_SPRITE_SIZE,
     imageIndex: index,
     url: IMAGE_LINKS[index] || null,
   }));
@@ -69,7 +87,19 @@ export function createBouncingSpritesScene(canvas, options = {}) {
   let animationFrame = 0;
   let destroyed = false;
 
+  function applySpriteSize(sprite, spriteSize) {
+    const centerX = sprite.x + sprite.width / 2;
+    const centerY = sprite.y + sprite.height / 2;
+    sprite.width = spriteSize;
+    sprite.height = spriteSize;
+    sprite.x = clamp(centerX - sprite.width / 2, 0, Math.max(0, width - sprite.width));
+    sprite.y = clamp(centerY - sprite.height / 2, 0, Math.max(0, height - sprite.height));
+  }
+
   function randomizeSprite(sprite) {
+    const { spriteSize } = resolveSpriteSettings(options);
+    sprite.width = spriteSize;
+    sprite.height = spriteSize;
     sprite.x = randomBetween(0, Math.max(0, width - sprite.width));
     sprite.y = randomBetween(0, Math.max(0, height - sprite.height));
     sprite.baseSpeed = randomBetween(2.5, 10);
@@ -100,11 +130,12 @@ export function createBouncingSpritesScene(canvas, options = {}) {
   }
 
   function update() {
-    const speedFactor = options.getSpeedFactor?.() ?? 1;
+    const settings = resolveSpriteSettings(options);
 
     sprites.forEach((sprite) => {
-      sprite.x += sprite.dx * sprite.baseSpeed * speedFactor;
-      sprite.y += sprite.dy * sprite.baseSpeed * speedFactor;
+      applySpriteSize(sprite, settings.spriteSize);
+      sprite.x += sprite.dx * sprite.baseSpeed * settings.speedFactor;
+      sprite.y += sprite.dy * sprite.baseSpeed * settings.speedFactor;
 
       if (sprite.x + sprite.width > width) {
         sprite.x = width - sprite.width;

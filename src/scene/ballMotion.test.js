@@ -48,13 +48,31 @@ describe('getLookDirection', () => {
     expect(look.z).toBeLessThan(1); // but tilted
   });
 
-  test('leans harder as the pointer gets closer', () => {
+  test('fades out at the unstable center and peaks near the inner range', () => {
     const bounds = { width: 8, height: 6 };
-    const near = getLookDirection({ x: 0, y: 0 }, { x: -1, y: 0 }, bounds, { range: 6 });
-    const far = getLookDirection({ x: 0, y: 0 }, { x: -3, y: 0 }, bounds, { range: 6 });
+    const almostCentered = getLookDirection(
+      { x: 0, y: 0 },
+      { x: -0.05, y: 0 },
+      bounds,
+      { range: 6, innerRange: 1 },
+    );
+    const nearInnerEdge = getLookDirection(
+      { x: 0, y: 0 },
+      { x: -1, y: 0 },
+      bounds,
+      { range: 6, innerRange: 1 },
+    );
+    const far = getLookDirection(
+      { x: 0, y: 0 },
+      { x: -3, y: 0 },
+      bounds,
+      { range: 6, innerRange: 1 },
+    );
 
-    expect(near.x).toBeGreaterThan(far.x); // closer → larger sideways tilt
-    expect(near.z).toBeLessThan(far.z); // closer → less forward
+    expect(nearInnerEdge.x).toBeGreaterThan(almostCentered.x);
+    expect(nearInnerEdge.z).toBeLessThan(almostCentered.z);
+    expect(nearInnerEdge.x).toBeGreaterThan(far.x);
+    expect(nearInnerEdge.z).toBeLessThan(far.z);
   });
 
   test('returns a unit direction vector', () => {
@@ -69,12 +87,11 @@ describe('getLookDirection', () => {
   });
 
   test('never leans beyond the maximum lean angle', () => {
-    // Pointer essentially on top of the ball → proximity ~1 → lean ~maxLean.
     const look = getLookDirection(
       { x: 0, y: 0 },
-      { x: -0.001, y: 0 },
+      { x: -1, y: 0 },
       { width: 8, height: 6 },
-      { maxLean: 0.6, range: 3 },
+      { maxLean: 0.6, range: 3, innerRange: 1 },
     );
 
     expect(Math.hypot(look.x, look.y)).toBeLessThanOrEqual(Math.sin(0.6) + 1e-9);
