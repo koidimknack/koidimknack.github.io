@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   getLookDirection,
+  getLookDirectionToPoint,
   normalizePointer,
   resolveCircleCollision,
   stepBall,
@@ -96,6 +97,36 @@ describe('getLookDirection', () => {
 
     expect(Math.hypot(look.x, look.y)).toBeLessThanOrEqual(Math.sin(0.6) + 1e-9);
     expect(look.x).toBeGreaterThan(0);
+  });
+});
+
+describe('getLookDirectionToPoint', () => {
+  test('tilts toward a world-space target point', () => {
+    const look = getLookDirectionToPoint(
+      { x: 2, y: -1 },
+      { x: 0, y: 0 },
+      { maxLean: 0.6, range: Number.POSITIVE_INFINITY, innerRange: 0 },
+    );
+
+    expect(look.x).toBeGreaterThan(0);
+    expect(look.y).toBeLessThan(0);
+    expect(Math.hypot(look.x, look.y, look.z)).toBeCloseTo(1, 12);
+  });
+
+  test('rests forward when the target point is at the ball center', () => {
+    expect(getLookDirectionToPoint(
+      { x: 1, y: 1 },
+      { x: 1, y: 1 },
+      { range: Number.POSITIVE_INFINITY },
+    )).toEqual({ x: 0, y: 0, z: 1 });
+  });
+
+  test('rests forward when a world-space target is outside the look range', () => {
+    expect(getLookDirectionToPoint(
+      { x: 4, y: 0 },
+      { x: 0, y: 0 },
+      { range: 3 },
+    )).toEqual({ x: 0, y: 0, z: 1 });
   });
 });
 

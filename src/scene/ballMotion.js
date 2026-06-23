@@ -26,29 +26,27 @@ function smoothstep(edge) {
 }
 
 // Returns the unit direction the ball's face should point: tilting toward the
-// pointer (capped at `maxLean` radians) and resting at *exactly* straight ahead
-// (+Z) when the pointer is out of range. The turn strength is shaped by two
-// smooth falloffs so it peaks near the ball's edge:
-//   - outer: fades to 0 as the pointer reaches `range`, so a far ball rests and
+// target (capped at `maxLean` radians) and resting at *exactly* straight ahead
+// (+Z) when the target is out of range. For range-limited look targets, the
+// turn strength is shaped by two smooth falloffs so it peaks near the ball's edge:
+//   - outer: fades to 0 as the target reaches `range`, so a far ball rests and
 //     doesn't over-rotate as it drifts past the cursor;
-//   - inner: fades back to 0 as the pointer reaches the ball center, where the
+//   - inner: fades back to 0 as the target reaches the ball center, where the
 //     look direction is ill-defined and would otherwise make the face spin.
-export function getLookDirection(
-  pointer,
+export function getLookDirectionToPoint(
+  target,
   ball,
-  bounds,
   { maxLean = 0.6, range = 3, innerRange = 1 } = {},
 ) {
-  const target = getPointerWorldPosition(pointer, bounds);
   const dx = target.x - ball.x;
   const dy = target.y - ball.y;
   const length = Math.hypot(dx, dy);
 
-  if (length === 0 || length >= range) {
+  if (length === 0 || range <= 0 || length >= range) {
     return { x: 0, y: 0, z: 1 };
   }
 
-  const outer = smoothstep(1 - length / range);
+  const outer = Number.isFinite(range) ? smoothstep(1 - length / range) : 1;
   const inner = innerRange > 0 ? smoothstep(Math.min(length / innerRange, 1)) : 1;
   const lean = maxLean * outer * inner;
   const sin = Math.sin(lean);
@@ -58,6 +56,19 @@ export function getLookDirection(
     y: (dy / length) * sin,
     z: Math.cos(lean),
   };
+}
+
+export function getLookDirection(
+  pointer,
+  ball,
+  bounds,
+  { maxLean = 0.6, range = 3, innerRange = 1 } = {},
+) {
+  return getLookDirectionToPoint(getPointerWorldPosition(pointer, bounds), ball, {
+    maxLean,
+    range,
+    innerRange,
+  });
 }
 
 export function stepBall(ball, bounds) {
