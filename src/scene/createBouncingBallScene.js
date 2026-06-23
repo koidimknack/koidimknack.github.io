@@ -15,8 +15,13 @@ export const LOOK_MODE_FOCUS = 'focus';
 const VIEW_HEIGHT = 8; // world units shown vertically (orthographic frustum)
 const DEFAULT_BALL_RADIUS = 0.5;
 const DEFAULT_TILT_SMOOTHING = 0.18;
-const DEFAULT_LOOK_RANGE = 10;
+const DEFAULT_LOOK_RANGE = 12.5;
 const DEFAULT_MAX_LEAN = degreesToRadians(55);
+const DEFAULT_FOCUS_EFFECTS_ENABLED = true;
+const FOCUS_EFFECT_SMOOTHING = 0.12;
+const FOCUS_FRONT_LIGHT_INTENSITY = 0.58;
+const FOCUS_MATERIAL_EMISSIVE_INTENSITY = 0.18;
+const FOCUS_VISUAL_SCALE = 1.15;
 const LOOK_MODE_NONE = 'none';
 const MAX_LOOK_RANGE = 20;
 const MAX_SPEED_FACTOR = 4;
@@ -33,8 +38,14 @@ export const BALL_COLOR_OPTIONS = [
   { id: 'green', label: 'Green', value: 0x51cf66, css: '#51cf66' },
   { id: 'blue', label: 'Blue', value: 0x4dabf7, css: '#4dabf7' },
   { id: 'purple', label: 'Purple', value: 0xcc5de8, css: '#cc5de8' },
+  { id: 'orange', label: 'Orange', value: 0xffa94d, css: '#ffa94d' },
+  { id: 'teal', label: 'Teal', value: 0x20c997, css: '#20c997' },
+  { id: 'pink', label: 'Pink', value: 0xf06595, css: '#f06595' },
+  { id: 'lime', label: 'Lime', value: 0x94d82d, css: '#94d82d' },
+  { id: 'white', label: 'White', value: 0xf8f9fa, css: '#f8f9fa' },
 ];
 
+const BALL_COLOR_IDS = BALL_COLOR_OPTIONS.map((color) => color.id);
 const FACE_COLOR = 0x1b1b1b;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -75,6 +86,22 @@ function readFocusColorId(getter) {
     : BALL_COLOR_OPTIONS[0].id;
 }
 
+function readActiveColorIds(getter) {
+  const rawColorIds = getter?.();
+  if (!Array.isArray(rawColorIds)) {
+    return [...BALL_COLOR_IDS];
+  }
+
+  const activeColorIds = [];
+  rawColorIds.forEach((colorId) => {
+    if (BALL_COLOR_IDS.includes(colorId) && !activeColorIds.includes(colorId)) {
+      activeColorIds.push(colorId);
+    }
+  });
+
+  return activeColorIds.length > 0 ? activeColorIds : [BALL_COLOR_IDS[0]];
+}
+
 export function getHitBallColorId(point, balls) {
   let hitColorId = null;
   let closestDistance = Number.POSITIVE_INFINITY;
@@ -88,6 +115,23 @@ export function getHitBallColorId(point, balls) {
   });
 
   return hitColorId;
+}
+
+export function getActiveBalls(balls, settings) {
+  const activeColorIds = new Set(settings.activeColorIds ?? BALL_COLOR_IDS);
+  return balls.filter((ball) => activeColorIds.has(ball.colorId));
+}
+
+export function resolveFocusEffectState(ball, focusBall, settings) {
+  const isFocused = settings.lookMode === LOOK_MODE_FOCUS
+    && settings.focusEffectsEnabled
+    && ball === focusBall;
+
+  return {
+    frontLightIntensity: isFocused ? FOCUS_FRONT_LIGHT_INTENSITY : 0,
+    materialEmissiveIntensity: isFocused ? FOCUS_MATERIAL_EMISSIVE_INTENSITY : 0,
+    visualScale: isFocused ? FOCUS_VISUAL_SCALE : 1,
+  };
 }
 
 export function resolveSceneSettings(options = {}) {
@@ -111,6 +155,11 @@ export function resolveSceneSettings(options = {}) {
     ),
     lookMode,
     focusColorId: readFocusColorId(options.getFocusColorId),
+    activeColorIds: readActiveColorIds(options.getActiveColorIds),
+    focusEffectsEnabled: readBooleanOption(
+      options.getFocusEffectsEnabled,
+      DEFAULT_FOCUS_EFFECTS_ENABLED,
+    ),
     facesFollowPointer: lookMode === LOOK_MODE_CURSOR,
   };
 }
@@ -139,11 +188,22 @@ function createFace(radius) {
 function createBall(colorOption) {
   const root = new THREE.Group();
   const lookGroup = new THREE.Group();
+  const focusFrontLight = new THREE.PointLight(0xfff1c7, 0, DEFAULT_BALL_RADIUS * 5.5, 1.7);
+  focusFrontLight.position.set(0, 0, DEFAULT_BALL_RADIUS * 3.2);
   root.add(lookGroup);
+  root.add(focusFrontLight);
+
+  const sphereMaterial = new THREE.MeshStandardMaterial({
+    color: colorOption.value,
+    emissive: colorOption.value,
+    emissiveIntensity: 0,
+    roughness: 0.35,
+    metalness: 0.05,
+  });
 
   const sphere = new THREE.Mesh(
     new THREE.SphereGeometry(DEFAULT_BALL_RADIUS, 48, 32),
-    new THREE.MeshStandardMaterial({ color: colorOption.value, roughness: 0.35, metalness: 0.05 }),
+    sphereMaterial,
   );
   lookGroup.add(sphere);
   lookGroup.add(createFace(DEFAULT_BALL_RADIUS));
@@ -152,6 +212,11 @@ function createBall(colorOption) {
     colorId: colorOption.id,
     root,
     lookGroup,
+    focusFrontLight,
+    focusFrontLightIntensity: 0,
+    focusMaterialEmissiveIntensity: 0,
+    focusVisualScale: 1,
+    sphereMaterial,
     state: { x: 0, y: 0, vx: 0, vy: 0, radius: DEFAULT_BALL_RADIUS },
   };
 }
@@ -262,9 +327,11 @@ export function createBouncingBallScene(canvas, options = {}) {
   }
 
   function handleClick(event) {
+    const settings = resolveSceneSettings(options);
+    const activeBalls = getActiveBalls(balls, settings);
     const normalizedPointer = updatePointerFromEvent(event);
     const point = getPointerWorldPosition(normalizedPointer, bounds);
-    const colorId = getHitBallColorId(point, balls);
+    const colorId = getHitBallColorId(point, activeBalls);
 
     if (colorId) {
       options.onLookTargetChange?.({ lookMode: LOOK_MODE_FOCUS, focusColorId: colorId });
@@ -277,10 +344,27 @@ export function createBouncingBallScene(canvas, options = {}) {
   function applyBallSize(ball, ballRadius) {
     ball.state.radius = ballRadius;
     ball.lookGroup.scale.setScalar(ballRadius / DEFAULT_BALL_RADIUS);
+    ball.focusFrontLight.position.z = ballRadius * 3.2;
+    ball.focusFrontLight.distance = ballRadius * 5.5;
   }
 
-  function getFocusBall(settings) {
-    return balls.find((ball) => ball.colorId === settings.focusColorId) ?? balls[0];
+  function getFocusBall(settings, activeBalls) {
+    return activeBalls.find((ball) => ball.colorId === settings.focusColorId) ?? null;
+  }
+
+  function applyFocusEffect(ball, settings, focusBall) {
+    const target = resolveFocusEffectState(ball, focusBall, settings);
+    ball.focusFrontLightIntensity += (
+      target.frontLightIntensity - ball.focusFrontLightIntensity
+    ) * FOCUS_EFFECT_SMOOTHING;
+    ball.focusMaterialEmissiveIntensity += (
+      target.materialEmissiveIntensity - ball.focusMaterialEmissiveIntensity
+    ) * FOCUS_EFFECT_SMOOTHING;
+    ball.focusVisualScale += (target.visualScale - ball.focusVisualScale) * FOCUS_EFFECT_SMOOTHING;
+
+    ball.focusFrontLight.intensity = ball.focusFrontLightIntensity;
+    ball.sphereMaterial.emissiveIntensity = ball.focusMaterialEmissiveIntensity;
+    ball.root.scale.setScalar(ball.focusVisualScale);
   }
 
   function orientFace(ball, settings, focusBall) {
@@ -314,12 +398,16 @@ export function createBouncingBallScene(canvas, options = {}) {
 
   function render() {
     const settings = resolveSceneSettings(options);
+    const activeBalls = getActiveBalls(balls, settings);
     bounds.speedFactor = settings.speedFactor;
 
-    balls.forEach((ball) => applyBallSize(ball, settings.ballRadius));
+    balls.forEach((ball) => {
+      ball.root.visible = activeBalls.includes(ball);
+      applyBallSize(ball, settings.ballRadius);
+    });
 
     // 1) Integrate motion and bounce off the viewport walls.
-    balls.forEach((ball) => {
+    activeBalls.forEach((ball) => {
       ball.state = stepBall(ball.state, {
         width: bounds.width,
         height: bounds.height,
@@ -329,9 +417,9 @@ export function createBouncingBallScene(canvas, options = {}) {
     });
 
     // 2) Bounce the balls off each other.
-    for (let i = 0; i < balls.length; i += 1) {
-      for (let j = i + 1; j < balls.length; j += 1) {
-        resolveCircleCollision(balls[i].state, balls[j].state);
+    for (let i = 0; i < activeBalls.length; i += 1) {
+      for (let j = i + 1; j < activeBalls.length; j += 1) {
+        resolveCircleCollision(activeBalls[i].state, activeBalls[j].state);
       }
     }
 
@@ -339,16 +427,19 @@ export function createBouncingBallScene(canvas, options = {}) {
     //    then place each ball before resolving focus targets.
     const halfWidth = bounds.width / 2;
     const halfHeight = bounds.height / 2;
-    balls.forEach((ball) => {
+    activeBalls.forEach((ball) => {
       const { radius } = ball.state;
       ball.state.x = clamp(ball.state.x, -halfWidth + radius, halfWidth - radius);
       ball.state.y = clamp(ball.state.y, -halfHeight + radius, halfHeight - radius);
       ball.root.position.set(ball.state.x, ball.state.y, 0);
     });
 
-    const focusBall = settings.lookMode === LOOK_MODE_FOCUS ? getFocusBall(settings) : null;
+    const focusBall = settings.lookMode === LOOK_MODE_FOCUS ? getFocusBall(settings, activeBalls) : null;
     balls.forEach((ball) => {
-      orientFace(ball, settings, focusBall);
+      applyFocusEffect(ball, settings, focusBall);
+      if (ball.root.visible) {
+        orientFace(ball, settings, focusBall);
+      }
     });
 
     renderer.render(scene, camera);
