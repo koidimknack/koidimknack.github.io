@@ -51,7 +51,14 @@
         :aria-label="settingsOpen ? 'Close 2D scene settings' : 'Open 2D scene settings'"
         @click="settingsOpen = !settingsOpen"
       >
-        <span class="scene-settings-triangle" aria-hidden="true"></span>
+        <svg
+          class="scene-drawer-chevron scene-settings-chevron"
+          viewBox="0 0 18 30"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M6.5 3 L13.5 15 L6.5 27" />
+        </svg>
       </button>
     </div>
   </section>
