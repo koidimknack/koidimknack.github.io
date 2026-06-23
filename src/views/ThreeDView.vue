@@ -37,14 +37,50 @@
             <span class="control-value">{{ ballRadius.toFixed(2) }}</span>
           </div>
 
-          <div class="scene-control-row scene-control-row--checkbox">
-            <label for="follow-cursor-3d">Follow cursor</label>
-            <input
-              id="follow-cursor-3d"
-              v-model="followCursor"
-              type="checkbox"
-            >
-            <span class="control-value">{{ followCursor ? 'On' : 'Off' }}</span>
+          <div class="scene-control-row scene-control-row--mode">
+            <label id="look-mode-3d">Look target</label>
+            <div class="scene-segmented" role="radiogroup" aria-labelledby="look-mode-3d">
+              <button
+                type="button"
+                role="radio"
+                :aria-checked="lookMode === LOOK_MODE_CURSOR"
+                :class="{ 'is-active': lookMode === LOOK_MODE_CURSOR }"
+                @click="lookMode = LOOK_MODE_CURSOR"
+              >
+                Cursor
+              </button>
+              <button
+                type="button"
+                role="radio"
+                :aria-checked="lookMode === LOOK_MODE_FOCUS"
+                :class="{ 'is-active': lookMode === LOOK_MODE_FOCUS }"
+                @click="lookMode = LOOK_MODE_FOCUS"
+              >
+                Focus
+              </button>
+            </div>
+            <span class="control-value">{{ lookModeLabel }}</span>
+          </div>
+
+          <div class="scene-control-row" :class="{ 'is-muted': lookMode !== LOOK_MODE_FOCUS }">
+            <label id="focus-color-3d">Focus color</label>
+            <div class="scene-color-options" role="radiogroup" aria-labelledby="focus-color-3d">
+              <button
+                v-for="color in BALL_COLOR_OPTIONS"
+                :key="color.id"
+                type="button"
+                class="scene-color-option"
+                :class="{ 'is-active': focusColorId === color.id }"
+                :style="{ '--swatch-color': color.css }"
+                role="radio"
+                :aria-checked="focusColorId === color.id"
+                :aria-label="`Use ${color.label} ball as center of attention`"
+                @click="focusColorId = color.id"
+              >
+                <span aria-hidden="true"></span>
+              </button>
+            </div>
+            <span class="control-value">{{ selectedFocusColorLabel }}</span>
           </div>
 
           <div class="scene-control-row">
@@ -107,11 +143,17 @@
 </template>
 
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { createBouncingBallScene } from '../scene/createBouncingBallScene.js';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  BALL_COLOR_OPTIONS,
+  LOOK_MODE_CURSOR,
+  LOOK_MODE_FOCUS,
+  createBouncingBallScene,
+} from '../scene/createBouncingBallScene.js';
 
 const DEFAULT_SPEED_FACTOR = 1;
-const DEFAULT_FOLLOW_CURSOR = true;
+const DEFAULT_LOOK_MODE = LOOK_MODE_CURSOR;
+const DEFAULT_FOCUS_COLOR_ID = BALL_COLOR_OPTIONS[0].id;
 const DEFAULT_FOLLOW_RADIUS = 10;
 const DEFAULT_BALL_RADIUS = 0.5;
 const DEFAULT_MAX_TILT_DEGREES = 55;
@@ -120,15 +162,35 @@ const DEFAULT_TILT_SMOOTHING = 0.18;
 const canvasRef = ref(null);
 const settingsOpen = ref(false);
 const speedFactor = ref(DEFAULT_SPEED_FACTOR);
-const followCursor = ref(DEFAULT_FOLLOW_CURSOR);
+const lookMode = ref(DEFAULT_LOOK_MODE);
+const focusColorId = ref(DEFAULT_FOCUS_COLOR_ID);
 const followRadius = ref(DEFAULT_FOLLOW_RADIUS);
 const ballRadius = ref(DEFAULT_BALL_RADIUS);
 const maxTiltDegrees = ref(DEFAULT_MAX_TILT_DEGREES);
 const tiltSmoothing = ref(DEFAULT_TILT_SMOOTHING);
 let sceneController;
 
+const selectedFocusColorLabel = computed(() => (
+  BALL_COLOR_OPTIONS.find((color) => color.id === focusColorId.value)?.label
+  ?? BALL_COLOR_OPTIONS[0].label
+));
+
+const lookModeLabel = computed(() => (
+  lookMode.value === LOOK_MODE_CURSOR ? 'Cursor' : selectedFocusColorLabel.value
+));
+
 function degreesToRadians(degrees) {
   return (degrees * Math.PI) / 180;
+}
+
+function setLookTarget({ lookMode: nextLookMode, focusColorId: nextFocusColorId }) {
+  if (nextLookMode === LOOK_MODE_CURSOR || nextLookMode === LOOK_MODE_FOCUS) {
+    lookMode.value = nextLookMode;
+  }
+
+  if (BALL_COLOR_OPTIONS.some((color) => color.id === nextFocusColorId)) {
+    focusColorId.value = nextFocusColorId;
+  }
 }
 
 watch(ballRadius, (radius) => {
@@ -139,7 +201,8 @@ watch(ballRadius, (radius) => {
 
 async function resetSettings() {
   speedFactor.value = DEFAULT_SPEED_FACTOR;
-  followCursor.value = DEFAULT_FOLLOW_CURSOR;
+  lookMode.value = DEFAULT_LOOK_MODE;
+  focusColorId.value = DEFAULT_FOCUS_COLOR_ID;
   ballRadius.value = DEFAULT_BALL_RADIUS;
   await nextTick();
   followRadius.value = DEFAULT_FOLLOW_RADIUS;
@@ -154,7 +217,9 @@ onMounted(() => {
     getBallRadius: () => ballRadius.value,
     getMaxLean: () => degreesToRadians(maxTiltDegrees.value),
     getTiltSmoothing: () => tiltSmoothing.value,
-    getFacesFollowPointer: () => followCursor.value,
+    getLookMode: () => lookMode.value,
+    getFocusColorId: () => focusColorId.value,
+    onLookTargetChange: setLookTarget,
   });
 });
 

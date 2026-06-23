@@ -2,16 +2,22 @@ import * as THREE from 'three';
 import {
   clamp,
   getLookDirection,
+  getLookDirectionToPoint,
+  getPointerWorldPosition,
   normalizePointer,
   resolveCircleCollision,
   stepBall,
 } from './ballMotion.js';
+
+export const LOOK_MODE_CURSOR = 'cursor';
+export const LOOK_MODE_FOCUS = 'focus';
 
 const VIEW_HEIGHT = 8; // world units shown vertically (orthographic frustum)
 const DEFAULT_BALL_RADIUS = 0.5;
 const DEFAULT_TILT_SMOOTHING = 0.18;
 const DEFAULT_LOOK_RANGE = 10;
 const DEFAULT_MAX_LEAN = degreesToRadians(55);
+const LOOK_MODE_NONE = 'none';
 const MAX_LOOK_RANGE = 20;
 const MAX_SPEED_FACTOR = 4;
 const MIN_BALL_RADIUS = 0.25;
@@ -21,7 +27,14 @@ const MAX_TILT_SMOOTHING = 1;
 const MIN_MAX_LEAN = degreesToRadians(10);
 const MAX_MAX_LEAN = degreesToRadians(60);
 
-const BALL_COLORS = [0xffdf2e, 0xff6b6b, 0x51cf66, 0x4dabf7, 0xcc5de8];
+export const BALL_COLOR_OPTIONS = [
+  { id: 'yellow', label: 'Yellow', value: 0xffdf2e, css: '#ffdf2e' },
+  { id: 'red', label: 'Red', value: 0xff6b6b, css: '#ff6b6b' },
+  { id: 'green', label: 'Green', value: 0x51cf66, css: '#51cf66' },
+  { id: 'blue', label: 'Blue', value: 0x4dabf7, css: '#4dabf7' },
+  { id: 'purple', label: 'Purple', value: 0xcc5de8, css: '#cc5de8' },
+];
+
 const FACE_COLOR = 0x1b1b1b;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -44,12 +57,46 @@ function readBooleanOption(getter, fallback) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+function readLookMode(options) {
+  const mode = options.getLookMode?.();
+  if (mode === LOOK_MODE_CURSOR || mode === LOOK_MODE_FOCUS || mode === LOOK_MODE_NONE) {
+    return mode;
+  }
+
+  return readBooleanOption(options.getFacesFollowPointer, true)
+    ? LOOK_MODE_CURSOR
+    : LOOK_MODE_NONE;
+}
+
+function readFocusColorId(getter) {
+  const colorId = getter?.();
+  return BALL_COLOR_OPTIONS.some((color) => color.id === colorId)
+    ? colorId
+    : BALL_COLOR_OPTIONS[0].id;
+}
+
+export function getHitBallColorId(point, balls) {
+  let hitColorId = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  balls.forEach((ball) => {
+    const distance = Math.hypot(point.x - ball.state.x, point.y - ball.state.y);
+    if (distance <= ball.state.radius && distance < closestDistance) {
+      hitColorId = ball.colorId;
+      closestDistance = distance;
+    }
+  });
+
+  return hitColorId;
+}
+
 export function resolveSceneSettings(options = {}) {
   const ballRadius = clamp(
     readOption(options.getBallRadius, DEFAULT_BALL_RADIUS),
     MIN_BALL_RADIUS,
     MAX_BALL_RADIUS,
   );
+  const lookMode = readLookMode(options);
 
   return {
     speedFactor: clamp(readOption(options.getSpeedFactor, 1), 0, MAX_SPEED_FACTOR),
@@ -62,7 +109,9 @@ export function resolveSceneSettings(options = {}) {
       MIN_TILT_SMOOTHING,
       MAX_TILT_SMOOTHING,
     ),
-    facesFollowPointer: readBooleanOption(options.getFacesFollowPointer, true),
+    lookMode,
+    focusColorId: readFocusColorId(options.getFocusColorId),
+    facesFollowPointer: lookMode === LOOK_MODE_CURSOR,
   };
 }
 
@@ -87,19 +136,20 @@ function createFace(radius) {
   return face;
 }
 
-function createBall(color) {
+function createBall(colorOption) {
   const root = new THREE.Group();
   const lookGroup = new THREE.Group();
   root.add(lookGroup);
 
   const sphere = new THREE.Mesh(
     new THREE.SphereGeometry(DEFAULT_BALL_RADIUS, 48, 32),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.05 }),
+    new THREE.MeshStandardMaterial({ color: colorOption.value, roughness: 0.35, metalness: 0.05 }),
   );
   lookGroup.add(sphere);
   lookGroup.add(createFace(DEFAULT_BALL_RADIUS));
 
   return {
+    colorId: colorOption.id,
     root,
     lookGroup,
     state: { x: 0, y: 0, vx: 0, vy: 0, radius: DEFAULT_BALL_RADIUS },
@@ -135,8 +185,8 @@ export function createBouncingBallScene(canvas, options = {}) {
   const ballsRoot = new THREE.Group();
   scene.add(ballsRoot);
 
-  const balls = BALL_COLORS.map((color) => {
-    const ball = createBall(color);
+  const balls = BALL_COLOR_OPTIONS.map((colorOption) => {
+    const ball = createBall(colorOption);
     ballsRoot.add(ball.root);
     return ball;
   });
@@ -189,7 +239,7 @@ export function createBouncingBallScene(canvas, options = {}) {
     bounds = { ...bounds, width: VIEW_HEIGHT * aspect, height: VIEW_HEIGHT };
   }
 
-  function updatePointer(event) {
+  function updatePointerFromEvent(event) {
     const rect = canvas.getBoundingClientRect();
     const normalizedPointer = normalizePointer(
       event.clientX - rect.left,
@@ -200,10 +250,28 @@ export function createBouncingBallScene(canvas, options = {}) {
     pointer.x = normalizedPointer.x;
     pointer.y = normalizedPointer.y;
     pointerActive = true;
+    return normalizedPointer;
+  }
+
+  function updatePointer(event) {
+    updatePointerFromEvent(event);
   }
 
   function handlePointerLeave() {
     pointerActive = false;
+  }
+
+  function handleClick(event) {
+    const normalizedPointer = updatePointerFromEvent(event);
+    const point = getPointerWorldPosition(normalizedPointer, bounds);
+    const colorId = getHitBallColorId(point, balls);
+
+    if (colorId) {
+      options.onLookTargetChange?.({ lookMode: LOOK_MODE_FOCUS, focusColorId: colorId });
+      return;
+    }
+
+    options.onLookTargetChange?.({ lookMode: LOOK_MODE_CURSOR });
   }
 
   function applyBallSize(ball, ballRadius) {
@@ -211,9 +279,20 @@ export function createBouncingBallScene(canvas, options = {}) {
     ball.lookGroup.scale.setScalar(ballRadius / DEFAULT_BALL_RADIUS);
   }
 
-  function orientFace(ball, settings) {
-    if (pointerActive && settings.facesFollowPointer) {
+  function getFocusBall(settings) {
+    return balls.find((ball) => ball.colorId === settings.focusColorId) ?? balls[0];
+  }
+
+  function orientFace(ball, settings, focusBall) {
+    if (settings.lookMode === LOOK_MODE_CURSOR && pointerActive) {
       const look = getLookDirection(pointer, ball.state, bounds, {
+        maxLean: settings.maxLean,
+        range: settings.lookRange,
+        innerRange: settings.innerLookRange,
+      });
+      lookDir.set(look.x, look.y, look.z);
+    } else if (settings.lookMode === LOOK_MODE_FOCUS && focusBall && ball !== focusBall) {
+      const look = getLookDirectionToPoint(focusBall.state, ball.state, {
         maxLean: settings.maxLean,
         range: settings.lookRange,
         innerRange: settings.innerLookRange,
@@ -257,7 +336,7 @@ export function createBouncingBallScene(canvas, options = {}) {
     }
 
     // 3) Keep everything inside the walls (a collision can nudge a ball out),
-    //    then place and orient each ball.
+    //    then place each ball before resolving focus targets.
     const halfWidth = bounds.width / 2;
     const halfHeight = bounds.height / 2;
     balls.forEach((ball) => {
@@ -265,7 +344,11 @@ export function createBouncingBallScene(canvas, options = {}) {
       ball.state.x = clamp(ball.state.x, -halfWidth + radius, halfWidth - radius);
       ball.state.y = clamp(ball.state.y, -halfHeight + radius, halfHeight - radius);
       ball.root.position.set(ball.state.x, ball.state.y, 0);
-      orientFace(ball, settings);
+    });
+
+    const focusBall = settings.lookMode === LOOK_MODE_FOCUS ? getFocusBall(settings) : null;
+    balls.forEach((ball) => {
+      orientFace(ball, settings, focusBall);
     });
 
     renderer.render(scene, camera);
@@ -277,6 +360,7 @@ export function createBouncingBallScene(canvas, options = {}) {
   window.addEventListener('resize', resize);
   canvas.addEventListener('pointermove', updatePointer);
   canvas.addEventListener('pointerleave', handlePointerLeave);
+  canvas.addEventListener('click', handleClick);
   resize();
   seedBallPositions();
   render();
@@ -288,6 +372,7 @@ export function createBouncingBallScene(canvas, options = {}) {
       window.removeEventListener('resize', resize);
       canvas.removeEventListener('pointermove', updatePointer);
       canvas.removeEventListener('pointerleave', handlePointerLeave);
+      canvas.removeEventListener('click', handleClick);
       ballsRoot.traverse((object) => {
         if (object.geometry) {
           object.geometry.dispose();
