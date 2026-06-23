@@ -83,6 +83,16 @@
             <span class="control-value">{{ selectedFocusColorLabel }}</span>
           </div>
 
+          <div class="scene-control-row" :class="{ 'is-muted': lookMode !== LOOK_MODE_FOCUS }">
+            <label for="focus-effects-3d">Focus light</label>
+            <input
+              id="focus-effects-3d"
+              v-model="focusEffectsEnabled"
+              type="checkbox"
+            >
+            <span class="control-value">{{ focusEffectsEnabled ? 'On' : 'Off' }}</span>
+          </div>
+
           <div class="scene-control-row">
             <label for="follow-radius-3d">Follow radius</label>
             <input
@@ -136,7 +146,51 @@
         :aria-label="settingsOpen ? 'Close 3D scene settings' : 'Open 3D scene settings'"
         @click="settingsOpen = !settingsOpen"
       >
-        <span class="scene-settings-triangle" aria-hidden="true"></span>
+        <svg
+          class="scene-drawer-chevron scene-settings-chevron"
+          viewBox="0 0 18 30"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M6.5 3 L13.5 15 L6.5 27" />
+        </svg>
+      </button>
+    </div>
+
+    <div class="scene-roster-drawer" :class="{ 'is-open': rosterOpen }">
+      <div class="scene-roster" aria-label="Ball roster">
+        <button
+          v-for="color in BALL_COLOR_OPTIONS"
+          :key="color.id"
+          type="button"
+          class="scene-roster-item"
+          :class="{
+            'is-active': isBallActive(color.id),
+            'is-shaking': shakeRosterColorId === color.id,
+          }"
+          :aria-pressed="isBallActive(color.id)"
+          :aria-label="`${isBallActive(color.id) ? 'Hide' : 'Show'} ${color.label} ball`"
+          @click="toggleRosterBall(color.id)"
+        >
+          <span class="scene-roster-swatch" :style="{ '--swatch-color': color.css }"></span>
+        </button>
+      </div>
+
+      <button
+        class="scene-roster-toggle"
+        type="button"
+        :aria-expanded="rosterOpen"
+        :aria-label="rosterOpen ? 'Hide ball roster' : 'Show ball roster'"
+        @click="rosterOpen = !rosterOpen"
+      >
+        <svg
+          class="scene-drawer-chevron scene-roster-chevron"
+          viewBox="0 0 18 30"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M6.5 3 L13.5 15 L6.5 27" />
+        </svg>
       </button>
     </div>
   </section>
@@ -144,6 +198,10 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  pickRandomActiveColorIds,
+  toggleActiveColorId,
+} from '../scene/ballRoster.js';
 import {
   BALL_COLOR_OPTIONS,
   LOOK_MODE_CURSOR,
@@ -154,13 +212,16 @@ import {
 const DEFAULT_SPEED_FACTOR = 1;
 const DEFAULT_LOOK_MODE = LOOK_MODE_CURSOR;
 const DEFAULT_FOCUS_COLOR_ID = BALL_COLOR_OPTIONS[0].id;
-const DEFAULT_FOLLOW_RADIUS = 10;
+const DEFAULT_FOLLOW_RADIUS = 12.5;
 const DEFAULT_BALL_RADIUS = 0.5;
 const DEFAULT_MAX_TILT_DEGREES = 55;
 const DEFAULT_TILT_SMOOTHING = 0.18;
+const DEFAULT_FOCUS_EFFECTS_ENABLED = true;
+const DEFAULT_ACTIVE_BALL_COUNT = 4;
 
 const canvasRef = ref(null);
 const settingsOpen = ref(false);
+const rosterOpen = ref(true);
 const speedFactor = ref(DEFAULT_SPEED_FACTOR);
 const lookMode = ref(DEFAULT_LOOK_MODE);
 const focusColorId = ref(DEFAULT_FOCUS_COLOR_ID);
@@ -168,7 +229,11 @@ const followRadius = ref(DEFAULT_FOLLOW_RADIUS);
 const ballRadius = ref(DEFAULT_BALL_RADIUS);
 const maxTiltDegrees = ref(DEFAULT_MAX_TILT_DEGREES);
 const tiltSmoothing = ref(DEFAULT_TILT_SMOOTHING);
+const focusEffectsEnabled = ref(DEFAULT_FOCUS_EFFECTS_ENABLED);
+const activeColorIds = ref(pickRandomActiveColorIds(BALL_COLOR_OPTIONS, DEFAULT_ACTIVE_BALL_COUNT));
+const shakeRosterColorId = ref(null);
 let sceneController;
+let shakeTimeout;
 
 const selectedFocusColorLabel = computed(() => (
   BALL_COLOR_OPTIONS.find((color) => color.id === focusColorId.value)?.label
@@ -193,9 +258,41 @@ function setLookTarget({ lookMode: nextLookMode, focusColorId: nextFocusColorId 
   }
 }
 
+function isBallActive(colorId) {
+  return activeColorIds.value.includes(colorId);
+}
+
+function triggerRosterShake(colorId) {
+  shakeRosterColorId.value = colorId;
+  window.clearTimeout(shakeTimeout);
+  shakeTimeout = window.setTimeout(() => {
+    shakeRosterColorId.value = null;
+  }, 260);
+}
+
+function toggleRosterBall(colorId) {
+  const result = toggleActiveColorId(activeColorIds.value, colorId);
+
+  if (result.rejected) {
+    triggerRosterShake(colorId);
+    return;
+  }
+
+  activeColorIds.value = result.activeColorIds;
+  if (lookMode.value === LOOK_MODE_FOCUS && !activeColorIds.value.includes(focusColorId.value)) {
+    lookMode.value = LOOK_MODE_CURSOR;
+  }
+}
+
 watch(ballRadius, (radius) => {
   if (followRadius.value < radius) {
     followRadius.value = radius;
+  }
+});
+
+watch([activeColorIds, focusColorId], () => {
+  if (lookMode.value === LOOK_MODE_FOCUS && !activeColorIds.value.includes(focusColorId.value)) {
+    lookMode.value = LOOK_MODE_CURSOR;
   }
 });
 
@@ -203,6 +300,7 @@ async function resetSettings() {
   speedFactor.value = DEFAULT_SPEED_FACTOR;
   lookMode.value = DEFAULT_LOOK_MODE;
   focusColorId.value = DEFAULT_FOCUS_COLOR_ID;
+  focusEffectsEnabled.value = DEFAULT_FOCUS_EFFECTS_ENABLED;
   ballRadius.value = DEFAULT_BALL_RADIUS;
   await nextTick();
   followRadius.value = DEFAULT_FOLLOW_RADIUS;
@@ -219,11 +317,14 @@ onMounted(() => {
     getTiltSmoothing: () => tiltSmoothing.value,
     getLookMode: () => lookMode.value,
     getFocusColorId: () => focusColorId.value,
+    getFocusEffectsEnabled: () => focusEffectsEnabled.value,
+    getActiveColorIds: () => activeColorIds.value,
     onLookTargetChange: setLookTarget,
   });
 });
 
 onBeforeUnmount(() => {
+  window.clearTimeout(shakeTimeout);
   sceneController?.destroy();
 });
 </script>
