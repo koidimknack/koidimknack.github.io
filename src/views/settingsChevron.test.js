@@ -51,4 +51,31 @@ describe('3D roster', () => {
     expect(markup).toContain('v-model.number="catPatiencePercent"');
     expect(markup).toContain('getCatPatiencePercent: () => catPatiencePercent.value');
   });
+
+  test('defaults the 3D focus target to the cat', () => {
+    const markup = readView('ThreeDView.vue');
+
+    expect(markup).toContain('const DEFAULT_FOCUS_COLOR_ID = CAT_OBJECT_ID;');
+  });
+
+  test('renders the cat exit speech bubble from scene callbacks', () => {
+    const markup = readView('ThreeDView.vue');
+    const styles = readFileSync(resolve(viewsDir, '../assets/scene.css'), 'utf8');
+
+    expect(markup).toContain('class="scene-cat-speech-bubble"');
+    expect(markup).toContain('onCatSpeechBubbleChange: setCatSpeechBubble');
+    expect(markup).toContain("I'm outta hear!");
+    expect(styles).toContain('.scene-cat-speech-bubble');
+  });
+
+  test('auto-closes the roster drawer after the pointer leaves it', () => {
+    const markup = readView('ThreeDView.vue');
+
+    expect(markup).toContain('const ROSTER_AUTO_CLOSE_DELAY_MS = 5000;');
+    expect(markup).toContain('@pointerenter="cancelRosterAutoClose"');
+    expect(markup).toContain('@pointerleave="scheduleRosterAutoClose"');
+    expect(markup).toContain('@click="toggleRosterOpen"');
+    expect(markup).toContain('rosterAutoCloseTimeout = window.setTimeout(() => {');
+    expect(markup).toContain('rosterOpen.value = false;');
+  });
 });

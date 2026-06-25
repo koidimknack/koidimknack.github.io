@@ -2,8 +2,10 @@ import { describe, expect, test } from 'vitest';
 import {
   BALL_COLOR_OPTIONS,
   CAT_BEHAVIOR_FLEEING,
+  CAT_BEHAVIOR_ANNOUNCING,
   CAT_BEHAVIOR_LEAVING,
   CAT_BEHAVIOR_RETREATING,
+  CAT_BEHAVIOR_TURNING_INWARD,
   CAT_BEHAVIOR_WATCHING,
   CAT_OBJECT_ID,
   LOOK_MODE_CURSOR,
@@ -15,6 +17,7 @@ import {
   resolveCatAvoidanceState,
   resolveCatFleeDirection,
   resolveCatIdleTransform,
+  resolveCatExitSequenceState,
   resolveCatMaxSpeed,
   resolveCatSmoothedYaw,
   resolveCatTargetYaw,
@@ -23,7 +26,9 @@ import {
   resolveSafeCornerRetreatTarget,
   resolveSafestCornerTarget,
   resolveSceneSettings,
+  resolveSceneFocusTarget,
   resolveSceneObjectCollisions,
+  isCatExitSequenceActive,
   isCatOutsideScene,
   shouldOrientObject,
   stepCatRunAwayState,
@@ -48,7 +53,7 @@ describe('resolveSceneSettings', () => {
     expect(settings.maxLean).toBeCloseTo(degreesToRadians(55), 12);
     expect(settings.tiltSmoothing).toBe(0.18);
     expect(settings.lookMode).toBe(LOOK_MODE_CURSOR);
-    expect(settings.focusColorId).toBe(BALL_COLOR_OPTIONS[0].id);
+    expect(settings.focusColorId).toBe(CAT_OBJECT_ID);
     expect(settings.focusEffectsEnabled).toBe(true);
     expect(settings.catMotionEnabled).toBe(true);
     expect(settings.catActive).toBe(true);
@@ -104,7 +109,7 @@ describe('resolveSceneSettings', () => {
     });
 
     expect(settings.lookMode).toBe(LOOK_MODE_CURSOR);
-    expect(settings.focusColorId).toBe(BALL_COLOR_OPTIONS[0].id);
+    expect(settings.focusColorId).toBe(CAT_OBJECT_ID);
     expect(settings.facesFollowPointer).toBe(true);
   });
 
@@ -213,6 +218,34 @@ describe('getFocusTarget', () => {
     expect(getFocusTarget([yellowBall], {
       focusColorId: CAT_OBJECT_ID,
     })).toBeNull();
+  });
+});
+
+describe('resolveSceneFocusTarget', () => {
+  test('uses the configured focus target during normal focus mode', () => {
+    const yellowBall = { colorId: 'yellow' };
+    const catObject = { colorId: CAT_OBJECT_ID };
+
+    expect(resolveSceneFocusTarget([yellowBall, catObject], {
+      lookMode: LOOK_MODE_FOCUS,
+      focusColorId: 'yellow',
+    }, {
+      catExitSequenceActive: false,
+      catObject,
+    })).toBe(yellowBall);
+  });
+
+  test('uses the cat as the focus target during the exit sequence', () => {
+    const yellowBall = { colorId: 'yellow' };
+    const catObject = { colorId: CAT_OBJECT_ID };
+
+    expect(resolveSceneFocusTarget([yellowBall, catObject], {
+      lookMode: LOOK_MODE_CURSOR,
+      focusColorId: 'yellow',
+    }, {
+      catExitSequenceActive: true,
+      catObject,
+    })).toBe(catObject);
   });
 });
 
@@ -503,7 +536,7 @@ describe('resolveCatAvoidanceState', () => {
     expect(Math.hypot(state.vx, state.vy)).toBeLessThanOrEqual(0.03);
   });
 
-  test('runs away immediately at zero percent patience', () => {
+  test('starts the cat exit sequence immediately at zero percent patience', () => {
     const catObject = {
       type: CAT_OBJECT_ID,
       state: {
@@ -528,12 +561,15 @@ describe('resolveCatAvoidanceState', () => {
       catPatiencePercent: 0,
     });
 
-    expect(state.catBehavior).toBe(CAT_BEHAVIOR_LEAVING);
+    expect(state.catBehavior).toBe(CAT_BEHAVIOR_TURNING_INWARD);
     expect(state.lookTargetState).toBe(null);
     expect(state.escapeTarget).toBe(null);
-    expect(state.vx).toBeGreaterThan(0);
+    expect(state.vx).toBe(0);
     expect(state.vy).toBe(0);
-    expect(Math.hypot(state.vx, state.vy)).toBeCloseTo(0.04, 12);
+    expect(state.exitDirection).toEqual({ x: 1, y: 0 });
+    expect(state.exitSpeed).toBeCloseTo(0.04, 12);
+    expect(state.exitAnnouncementFramesRemaining).toBeGreaterThan(0);
+    expect(isCatExitSequenceActive(state)).toBe(true);
   });
 
   test('runs away when ball pressure exceeds the configured patience percent', () => {
@@ -566,7 +602,8 @@ describe('resolveCatAvoidanceState', () => {
       catPatiencePercent: 50,
     });
 
-    expect(state.catBehavior).toBe(CAT_BEHAVIOR_LEAVING);
+    expect(state.catBehavior).toBe(CAT_BEHAVIOR_TURNING_INWARD);
+    expect(isCatExitSequenceActive(state)).toBe(true);
   });
 
   test('keeps the cat from running away at full patience', () => {
@@ -622,9 +659,64 @@ describe('resolveCatAvoidanceState', () => {
       catPatiencePercent: 0,
     });
 
-    expect(state.catBehavior).toBe(CAT_BEHAVIOR_LEAVING);
-    expect(state.vx).toBeGreaterThan(0);
+    expect(state.catBehavior).toBe(CAT_BEHAVIOR_TURNING_INWARD);
+    expect(state.exitDirection).toEqual({ x: 1, y: 0 });
+    expect(state.exitSpeed).toBeGreaterThan(0.04);
+    expect(state.vx).toBe(0);
     expect(state.vy).toBe(0);
+  });
+
+  test('boosts the cat exit speed when it has farther to reach the edge', () => {
+    const catObject = {
+      type: CAT_OBJECT_ID,
+      state: {
+        x: 0,
+        y: 0,
+        vx: 0.02,
+        vy: 0,
+        radius: 0.75,
+        catBehavior: CAT_BEHAVIOR_FLEEING,
+      },
+    };
+    const nearbyBalls = [
+      { colorId: 'blue', state: { x: -0.8, y: 0, vx: 0.08, vy: 0, radius: 0.5 } },
+      { colorId: 'red', state: { x: -3, y: 0, vx: 0.04, vy: 0, radius: 0.5 } },
+      { colorId: 'green', state: { x: 0, y: 3, vx: 0.12, vy: 0, radius: 0.5 } },
+    ];
+
+    const state = resolveCatAvoidanceState(catObject, nearbyBalls, {
+      bounds: { width: 8, height: 8 },
+      maxSpeed: 0.08,
+      catPatiencePercent: 0,
+    });
+
+    expect(state.exitDirection).toEqual({ x: 1, y: 0 });
+    expect(state.exitSpeed).toBeGreaterThan(0.04);
+    expect(state.exitSpeed).toBeLessThanOrEqual(0.075);
+  });
+
+  test('keeps a minimum cat exit speed even when ball speeds are tiny', () => {
+    const catObject = {
+      type: CAT_OBJECT_ID,
+      state: {
+        x: 3,
+        y: 0,
+        vx: 0.001,
+        vy: 0,
+        radius: 0.75,
+        catBehavior: CAT_BEHAVIOR_FLEEING,
+      },
+    };
+    const nearbyBalls = [
+      { colorId: 'blue', state: { x: 2.2, y: 0, vx: 0.002, vy: 0, radius: 0.5 } },
+    ];
+
+    const state = resolveCatAvoidanceState(catObject, nearbyBalls, {
+      bounds: { width: 8, height: 8 },
+      catPatiencePercent: 0,
+    });
+
+    expect(state.exitSpeed).toBe(0.03);
   });
 
   test('resets agitation while the cat is only watching', () => {
@@ -1010,6 +1102,40 @@ describe('resolveCatAvoidanceState', () => {
     expect(state.vx).toBe(0.2);
   });
 
+  test('keeps the leaving cat moving at a minimum visible speed', () => {
+    const state = stepCatRunAwayState({
+      x: 0,
+      y: 0,
+      vx: 0.001,
+      vy: 0,
+      radius: 0.75,
+      catBehavior: CAT_BEHAVIOR_LEAVING,
+      exitDirection: { x: 1, y: 0 },
+      exitSpeed: 0.001,
+    }, {
+      speedFactor: 0.2,
+    });
+
+    expect(state.x).toBe(0.03);
+  });
+
+  test('caps the leaving cat speed when the scene speed is high', () => {
+    const state = stepCatRunAwayState({
+      x: 0,
+      y: 0,
+      vx: 0.2,
+      vy: 0,
+      radius: 0.75,
+      catBehavior: CAT_BEHAVIOR_LEAVING,
+      exitDirection: { x: 1, y: 0 },
+      exitSpeed: 0.2,
+    }, {
+      speedFactor: 3,
+    });
+
+    expect(state.x).toBe(0.075);
+  });
+
   test('detects when the leaving cat has fully crossed the viewport edge', () => {
     expect(isCatOutsideScene({
       x: 4.8,
@@ -1134,6 +1260,66 @@ describe('resolveCatTargetYaw', () => {
     })).toBeLessThan(-0.45);
   });
 
+  test('turns the pre-leaving cat inward before showing the speech bubble', () => {
+    const catObject = {
+      type: CAT_OBJECT_ID,
+      state: {
+        x: 2,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        radius: 0.75,
+        catBehavior: CAT_BEHAVIOR_TURNING_INWARD,
+        exitDirection: { x: 1, y: 0 },
+      },
+    };
+    const settings = resolveSceneSettings();
+
+    expect(resolveCatTargetYaw(catObject, settings, {
+      bounds: { width: 8, height: 8 },
+    })).toBeLessThan(-0.45);
+  });
+
+  test('keeps the announcing cat facing inward while the bubble is visible', () => {
+    const catObject = {
+      type: CAT_OBJECT_ID,
+      state: {
+        x: -2,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        radius: 0.75,
+        catBehavior: CAT_BEHAVIOR_ANNOUNCING,
+        exitDirection: { x: -1, y: 0 },
+      },
+    };
+    const settings = resolveSceneSettings();
+
+    expect(resolveCatTargetYaw(catObject, settings, {
+      bounds: { width: 8, height: 8 },
+    })).toBeGreaterThan(0.45);
+  });
+
+  test('turns the leaving cat outward toward its exit edge', () => {
+    const catObject = {
+      type: CAT_OBJECT_ID,
+      state: {
+        x: 0,
+        y: 0,
+        vx: 0.05,
+        vy: 0,
+        radius: 0.75,
+        catBehavior: CAT_BEHAVIOR_LEAVING,
+        exitDirection: { x: 1, y: 0 },
+      },
+    };
+    const settings = resolveSceneSettings();
+
+    expect(resolveCatTargetYaw(catObject, settings, {
+      bounds: { width: 8, height: 8 },
+    })).toBeGreaterThan(0.45);
+  });
+
   test('does not target-turn when cat motion is disabled', () => {
     const catObject = {
       type: CAT_OBJECT_ID,
@@ -1155,6 +1341,51 @@ describe('resolveCatTargetYaw', () => {
     expect(resolveCatTargetYaw(catObject, settings, {
       bounds: { width: 8, height: 8 },
     })).toBe(0);
+  });
+});
+
+describe('resolveCatExitSequenceState', () => {
+  test('waits to show the bubble until the cat has turned inward', () => {
+    const turningState = {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      radius: 0.75,
+      catBehavior: CAT_BEHAVIOR_TURNING_INWARD,
+      exitDirection: { x: 1, y: 0 },
+      exitSpeed: 0.04,
+      exitAnnouncementFramesRemaining: 45,
+    };
+
+    expect(resolveCatExitSequenceState(turningState, -0.2).catBehavior)
+      .toBe(CAT_BEHAVIOR_TURNING_INWARD);
+
+    const announcedState = resolveCatExitSequenceState(turningState, -0.84);
+
+    expect(announcedState.catBehavior).toBe(CAT_BEHAVIOR_ANNOUNCING);
+    expect(announcedState.vx).toBe(0);
+    expect(announcedState.vy).toBe(0);
+    expect(announcedState.exitAnnouncementFramesRemaining).toBe(45);
+  });
+
+  test('starts the horizontal leave motion after the announcement expires', () => {
+    const state = resolveCatExitSequenceState({
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      radius: 0.75,
+      catBehavior: CAT_BEHAVIOR_ANNOUNCING,
+      exitDirection: { x: -1, y: 0 },
+      exitSpeed: 0.04,
+      exitAnnouncementFramesRemaining: 1,
+    }, 0.84);
+
+    expect(state.catBehavior).toBe(CAT_BEHAVIOR_LEAVING);
+    expect(state.vx).toBe(-0.04);
+    expect(state.vy).toBe(0);
+    expect(state.exitAnnouncementFramesRemaining).toBe(0);
   });
 });
 

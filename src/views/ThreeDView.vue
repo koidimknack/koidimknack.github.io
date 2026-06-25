@@ -1,6 +1,17 @@
 <template>
   <section class="scene-view">
     <canvas ref="canvasRef" class="scene-canvas" aria-label="Bouncing 3D ball scene"></canvas>
+    <div
+      v-if="catSpeechBubble.visible"
+      class="scene-cat-speech-bubble"
+      :style="{
+        left: `${catSpeechBubble.x}px`,
+        top: `${catSpeechBubble.y}px`,
+      }"
+      aria-live="polite"
+    >
+      I'm outta hear!
+    </div>
     <div class="scene-settings" :class="{ 'is-open': settingsOpen }">
       <aside
         id="settings-3d"
@@ -180,7 +191,12 @@
       </button>
     </div>
 
-    <div class="scene-roster-drawer" :class="{ 'is-open': rosterOpen }">
+    <div
+      class="scene-roster-drawer"
+      :class="{ 'is-open': rosterOpen }"
+      @pointerenter="cancelRosterAutoClose"
+      @pointerleave="scheduleRosterAutoClose"
+    >
       <div class="scene-roster" aria-label="Scene roster">
         <button
           v-for="item in rosterItems"
@@ -216,7 +232,7 @@
         type="button"
         :aria-expanded="rosterOpen"
         :aria-label="rosterOpen ? 'Hide ball roster' : 'Show ball roster'"
-        @click="rosterOpen = !rosterOpen"
+        @click="toggleRosterOpen"
       >
         <svg
           class="scene-drawer-chevron scene-roster-chevron"
@@ -247,7 +263,7 @@ import {
 
 const DEFAULT_SPEED_FACTOR = 1.5;
 const DEFAULT_LOOK_MODE = LOOK_MODE_CURSOR;
-const DEFAULT_FOCUS_COLOR_ID = BALL_COLOR_OPTIONS[0].id;
+const DEFAULT_FOCUS_COLOR_ID = CAT_OBJECT_ID;
 const DEFAULT_FOLLOW_RADIUS = 12.5;
 const DEFAULT_BALL_RADIUS = 0.5;
 const DEFAULT_MAX_TILT_DEGREES = 55;
@@ -256,6 +272,7 @@ const DEFAULT_FOCUS_EFFECTS_ENABLED = true;
 const DEFAULT_CAT_MOTION_ENABLED = true;
 const DEFAULT_CAT_PATIENCE_PERCENT = 50;
 const DEFAULT_ACTIVE_BALL_COUNT = 4;
+const ROSTER_AUTO_CLOSE_DELAY_MS = 5000;
 const CAT_FOCUS_LABEL = 'Cat';
 const BALL_COLOR_IDS = BALL_COLOR_OPTIONS.map((color) => color.id);
 const CAT_ROSTER_ITEM = {
@@ -278,6 +295,7 @@ const tiltSmoothing = ref(DEFAULT_TILT_SMOOTHING);
 const focusEffectsEnabled = ref(DEFAULT_FOCUS_EFFECTS_ENABLED);
 const catMotionEnabled = ref(DEFAULT_CAT_MOTION_ENABLED);
 const catPatiencePercent = ref(DEFAULT_CAT_PATIENCE_PERCENT);
+const catSpeechBubble = ref({ visible: false, x: 0, y: 0 });
 const activeRosterIds = ref([
   CAT_OBJECT_ID,
   ...pickRandomActiveColorIds(BALL_COLOR_OPTIONS, DEFAULT_ACTIVE_BALL_COUNT),
@@ -285,6 +303,8 @@ const activeRosterIds = ref([
 const shakeRosterItemId = ref(null);
 let sceneController;
 let shakeTimeout;
+let rosterAutoCloseTimeout;
+let rosterPointerInside = false;
 
 const rosterItems = computed(() => [
   CAT_ROSTER_ITEM,
@@ -347,6 +367,50 @@ function triggerRosterShake(rosterId) {
   }, 260);
 }
 
+function hideCatSpeechBubble() {
+  catSpeechBubble.value = {
+    ...catSpeechBubble.value,
+    visible: false,
+  };
+}
+
+function setCatSpeechBubble(nextBubble) {
+  catSpeechBubble.value = {
+    visible: Boolean(nextBubble?.visible),
+    x: Number.isFinite(nextBubble?.x) ? nextBubble.x : catSpeechBubble.value.x,
+    y: Number.isFinite(nextBubble?.y) ? nextBubble.y : catSpeechBubble.value.y,
+  };
+}
+
+function cancelRosterAutoClose() {
+  rosterPointerInside = true;
+  window.clearTimeout(rosterAutoCloseTimeout);
+}
+
+function scheduleRosterAutoClose() {
+  rosterPointerInside = false;
+  window.clearTimeout(rosterAutoCloseTimeout);
+  if (!rosterOpen.value) {
+    return;
+  }
+
+  rosterAutoCloseTimeout = window.setTimeout(() => {
+    if (!rosterPointerInside) {
+      rosterOpen.value = false;
+    }
+  }, ROSTER_AUTO_CLOSE_DELAY_MS);
+}
+
+function toggleRosterOpen() {
+  rosterOpen.value = !rosterOpen.value;
+  if (rosterOpen.value && !rosterPointerInside) {
+    scheduleRosterAutoClose();
+    return;
+  }
+
+  window.clearTimeout(rosterAutoCloseTimeout);
+}
+
 function toggleRosterItem(rosterId) {
   const result = toggleActiveRosterId(activeRosterIds.value, rosterId);
 
@@ -356,6 +420,9 @@ function toggleRosterItem(rosterId) {
   }
 
   activeRosterIds.value = result.activeRosterIds;
+  if (!isRosterItemActive(CAT_OBJECT_ID)) {
+    hideCatSpeechBubble();
+  }
   if (lookMode.value === LOOK_MODE_FOCUS && !isFocusTargetActive(focusColorId.value)) {
     lookMode.value = LOOK_MODE_CURSOR;
   }
@@ -367,6 +434,9 @@ function deactivateRosterItem(rosterId) {
   }
 
   activeRosterIds.value = activeRosterIds.value.filter((activeRosterId) => activeRosterId !== rosterId);
+  if (rosterId === CAT_OBJECT_ID) {
+    hideCatSpeechBubble();
+  }
   if (lookMode.value === LOOK_MODE_FOCUS && !isFocusTargetActive(focusColorId.value)) {
     lookMode.value = LOOK_MODE_CURSOR;
   }
@@ -413,12 +483,16 @@ onMounted(() => {
     getCatActive: () => isRosterItemActive(CAT_OBJECT_ID),
     getActiveColorIds: () => activeColorIds.value,
     onLookTargetChange: setLookTarget,
+    onCatSpeechBubbleChange: setCatSpeechBubble,
     onCatRunAway: () => deactivateRosterItem(CAT_OBJECT_ID),
   });
+  scheduleRosterAutoClose();
 });
 
 onBeforeUnmount(() => {
   window.clearTimeout(shakeTimeout);
+  window.clearTimeout(rosterAutoCloseTimeout);
+  hideCatSpeechBubble();
   sceneController?.destroy();
 });
 </script>

@@ -17,19 +17,21 @@ export const CAT_OBJECT_ID = 'cat';
 export const CAT_BEHAVIOR_WATCHING = 'watching';
 export const CAT_BEHAVIOR_FLEEING = 'fleeing';
 export const CAT_BEHAVIOR_RETREATING = 'retreating';
+export const CAT_BEHAVIOR_TURNING_INWARD = 'turning_inward';
+export const CAT_BEHAVIOR_ANNOUNCING = 'announcing';
 export const CAT_BEHAVIOR_LEAVING = 'leaving';
 
 const VIEW_HEIGHT = 8; // world units shown vertically (orthographic frustum)
-const DEFAULT_SPEED_FACTOR = 1.5;
+const DEFAULT_SPEED_FACTOR = 1.;
 const DEFAULT_BALL_RADIUS = 0.5;
 const DEFAULT_CAT_RADIUS = 0.75;
 const DEFAULT_TILT_SMOOTHING = 0.18;
-const DEFAULT_LOOK_RANGE = 12.5;
+const DEFAULT_LOOK_RANGE = 13.5;
 const DEFAULT_MAX_LEAN = degreesToRadians(55);
 const DEFAULT_FOCUS_EFFECTS_ENABLED = true;
 const DEFAULT_CAT_MOTION_ENABLED = true;
 const DEFAULT_CAT_ACTIVE = true;
-const DEFAULT_CAT_PATIENCE_PERCENT = 50;
+const DEFAULT_CAT_PATIENCE_PERCENT = 20;
 const FOCUS_EFFECT_SMOOTHING = 0.12;
 const FOCUS_FRONT_LIGHT_INTENSITY = 0.58;
 const FOCUS_MATERIAL_EMISSIVE_INTENSITY = 0.18;
@@ -76,6 +78,9 @@ const CAT_DANGER_BUFFER = 0.55;
 const CAT_SAFE_BUFFER = 0.95;
 const CAT_WATCHING_DECELERATION = 0.003;
 const CAT_TARGET_YAW_SMOOTHING = 0.14;
+const CAT_EXIT_TARGET_YAW_SMOOTHING = 0.08;
+const CAT_EXIT_INWARD_TURN_THRESHOLD = 0.08;
+const CAT_EXIT_ANNOUNCEMENT_FRAMES = 90;
 const CAT_CORNER_RETREAT_DELAY_FRAMES = 120;
 const CAT_CORNER_SETTLE_DISTANCE = 0.45;
 const CAT_CORNER_RETREAT_SPEED_FACTOR = 0.9;
@@ -85,6 +90,10 @@ const CAT_CORNER_NEAR_DISTANCE_FACTOR = 2;
 const CAT_CORNER_SETTLE_SPEED_FACTOR = 0.35;
 const CAT_AGITATION_WINDOW_FRAMES = 600;
 const CAT_RUN_AWAY_SPEED_FACTOR = 0.5;
+const CAT_MIN_RUN_AWAY_SPEED = 0.03;
+const CAT_MAX_RUN_AWAY_SPEED = 0.075;
+const CAT_RUN_AWAY_DISTANCE_BOOST = 0.025;
+const CAT_RUN_AWAY_DISTANCE_BOOST_START = 0.3;
 
 export const BALL_COLOR_OPTIONS = [
   { id: 'yellow', label: 'Yellow', value: 0xffdf2e, css: '#ffdf2e' },
@@ -138,7 +147,7 @@ function readFocusColorId(getter) {
   const colorId = getter?.();
   return FOCUS_TARGET_IDS.includes(colorId)
     ? colorId
-    : BALL_COLOR_OPTIONS[0].id;
+    : CAT_OBJECT_ID;
 }
 
 function readActiveColorIds(getter) {
@@ -188,6 +197,20 @@ export function getActiveSceneObjects(balls, catObject, settings) {
 
 export function getFocusTarget(sceneObjects, settings) {
   return sceneObjects.find((object) => object.colorId === settings.focusColorId) ?? null;
+}
+
+export function resolveSceneFocusTarget(
+  activeObjects,
+  settings,
+  { catExitSequenceActive = false, catObject = null } = {},
+) {
+  if (catExitSequenceActive && catObject && activeObjects.includes(catObject)) {
+    return catObject;
+  }
+
+  return settings.lookMode === LOOK_MODE_FOCUS
+    ? getFocusTarget(activeObjects, settings)
+    : null;
 }
 
 export function resolveFocusEffectState(ball, focusTarget, settings) {
@@ -631,8 +654,37 @@ function resolveMedianBallSpeed(balls) {
     : speeds[middleIndex];
 }
 
-function resolveCatRunAwaySpeed(balls) {
-  return resolveMedianBallSpeed(balls) * CAT_RUN_AWAY_SPEED_FACTOR;
+function resolveCatExitDistanceToEdge(state, bounds, direction) {
+  if (!bounds?.width) {
+    return 0;
+  }
+
+  const halfWidth = bounds.width / 2;
+  return direction.x < 0
+    ? state.x + halfWidth
+    : halfWidth - state.x;
+}
+
+function resolveCatRunAwaySpeed(balls, state, bounds) {
+  const direction = resolveCatExitDirection(state, bounds);
+  const baseSpeed = resolveMedianBallSpeed(balls) * CAT_RUN_AWAY_SPEED_FACTOR;
+  const halfWidth = bounds?.width ? bounds.width / 2 : 0;
+  const distanceToEdge = resolveCatExitDistanceToEdge(state, bounds, direction);
+  const normalizedDistance = halfWidth > 0
+    ? clamp(distanceToEdge / halfWidth, 0, 1)
+    : 0;
+  const boostAmount = clamp(
+    (normalizedDistance - CAT_RUN_AWAY_DISTANCE_BOOST_START)
+      / (1 - CAT_RUN_AWAY_DISTANCE_BOOST_START),
+    0,
+    1,
+  ) * CAT_RUN_AWAY_DISTANCE_BOOST;
+
+  return clamp(
+    baseSpeed + boostAmount,
+    CAT_MIN_RUN_AWAY_SPEED,
+    CAT_MAX_RUN_AWAY_SPEED,
+  );
 }
 
 function resolveCatRunAwayState(state, bounds, {
@@ -643,15 +695,107 @@ function resolveCatRunAwayState(state, bounds, {
 
   return {
     ...state,
-    vx: direction.x * resolvedSpeed,
-    vy: direction.y * resolvedSpeed,
-    catBehavior: CAT_BEHAVIOR_LEAVING,
+    vx: 0,
+    vy: 0,
+    catBehavior: CAT_BEHAVIOR_TURNING_INWARD,
+    exitDirection: direction,
+    exitSpeed: resolvedSpeed,
+    exitAnnouncementFramesRemaining: CAT_EXIT_ANNOUNCEMENT_FRAMES,
     escapeTarget: null,
     lookTargetState: null,
   };
 }
 
+export function isCatExitSequenceActive(state) {
+  return state?.catBehavior === CAT_BEHAVIOR_TURNING_INWARD
+    || state?.catBehavior === CAT_BEHAVIOR_ANNOUNCING
+    || state?.catBehavior === CAT_BEHAVIOR_LEAVING;
+}
+
+function resolveCatInwardExitYaw(state) {
+  const exitX = state.exitDirection?.x === -1 ? -1 : 1;
+  return -exitX * CAT_TARGET_YAW_AMOUNT;
+}
+
+function resolveCatOutwardExitVelocity(state) {
+  const exitX = state.exitDirection?.x === -1 ? -1 : 1;
+  const speed = Math.max(0, state.exitSpeed ?? 0);
+  return {
+    vx: exitX * speed,
+    vy: 0,
+  };
+}
+
+export function resolveCatExitSequenceState(state, smoothedTargetYaw, {
+  turnThreshold = CAT_EXIT_INWARD_TURN_THRESHOLD,
+  announcementFrames = CAT_EXIT_ANNOUNCEMENT_FRAMES,
+} = {}) {
+  if (state.catBehavior === CAT_BEHAVIOR_TURNING_INWARD) {
+    const targetYaw = resolveCatInwardExitYaw(state);
+    if (Math.abs(smoothedTargetYaw - targetYaw) > turnThreshold) {
+      return {
+        ...state,
+        vx: 0,
+        vy: 0,
+      };
+    }
+
+    return {
+      ...state,
+      vx: 0,
+      vy: 0,
+      catBehavior: CAT_BEHAVIOR_ANNOUNCING,
+      exitAnnouncementFramesRemaining: Math.max(
+        1,
+        Math.floor(state.exitAnnouncementFramesRemaining ?? announcementFrames),
+      ),
+    };
+  }
+
+  if (state.catBehavior !== CAT_BEHAVIOR_ANNOUNCING) {
+    return state;
+  }
+
+  const nextFramesRemaining = Math.max(
+    0,
+    Math.floor(state.exitAnnouncementFramesRemaining ?? announcementFrames) - 1,
+  );
+  if (nextFramesRemaining > 0) {
+    return {
+      ...state,
+      vx: 0,
+      vy: 0,
+      exitAnnouncementFramesRemaining: nextFramesRemaining,
+    };
+  }
+
+  return {
+    ...state,
+    ...resolveCatOutwardExitVelocity(state),
+    catBehavior: CAT_BEHAVIOR_LEAVING,
+    exitAnnouncementFramesRemaining: 0,
+  };
+}
+
 export function stepCatRunAwayState(state, { speedFactor = 1 } = {}) {
+  if (state.exitDirection && Number.isFinite(state.exitSpeed)) {
+    const exitX = state.exitDirection.x === -1 ? -1 : 1;
+    const resolvedSpeedFactor = Number.isFinite(speedFactor)
+      ? Math.max(0, speedFactor)
+      : 1;
+    const stepSpeed = clamp(
+      Math.max(0, state.exitSpeed) * resolvedSpeedFactor,
+      CAT_MIN_RUN_AWAY_SPEED,
+      CAT_MAX_RUN_AWAY_SPEED,
+    );
+
+    return {
+      ...state,
+      x: state.x + exitX * stepSpeed,
+      y: state.y,
+    };
+  }
+
   return {
     ...state,
     x: state.x + (state.vx ?? 0) * speedFactor,
@@ -1007,7 +1151,7 @@ export function resolveCatAvoidanceState(object, balls, {
     return object.state;
   }
 
-  if (object.state.catBehavior === CAT_BEHAVIOR_LEAVING) {
+  if (isCatExitSequenceActive(object.state)) {
     return object.state;
   }
 
@@ -1055,7 +1199,7 @@ export function resolveCatAvoidanceState(object, balls, {
     )
   ) {
     return resolveCatRunAwayState(stateWithTimers, bounds, {
-      speed: resolveCatRunAwaySpeed(balls),
+      speed: resolveCatRunAwaySpeed(balls, stateWithTimers, bounds),
     });
   }
 
@@ -1203,6 +1347,13 @@ export function resolveCatTargetYaw(object, settings, {
   }
 
   if (
+    object.state.catBehavior === CAT_BEHAVIOR_TURNING_INWARD
+    || object.state.catBehavior === CAT_BEHAVIOR_ANNOUNCING
+  ) {
+    return resolveCatInwardExitYaw(object.state);
+  }
+
+  if (
     object.state.catBehavior === CAT_BEHAVIOR_FLEEING
     || object.state.catBehavior === CAT_BEHAVIOR_RETREATING
     || object.state.catBehavior === CAT_BEHAVIOR_LEAVING
@@ -1210,7 +1361,7 @@ export function resolveCatTargetYaw(object, settings, {
     const speed = Math.hypot(object.state.vx, object.state.vy);
     return speed > CAT_AVOIDANCE_EPSILON
       ? (object.state.vx / speed) * CAT_TARGET_YAW_AMOUNT
-      : 0;
+      : (object.state.exitDirection?.x ?? 0) * CAT_TARGET_YAW_AMOUNT;
   }
 
   if (object.state.lookTargetState) {
@@ -1467,6 +1618,9 @@ function createCatObject(shouldSkipAttach) {
       agitationWindow: [],
       escapeTarget: null,
       lookTargetState: null,
+      exitDirection: null,
+      exitSpeed: 0,
+      exitAnnouncementFramesRemaining: 0,
     },
   };
 }
@@ -1518,6 +1672,7 @@ export function createBouncingBallScene(canvas, options = {}) {
   const clock = new THREE.Clock();
   let wasCatActive = false;
   let catRunAwayNotified = false;
+  let catSpeechBubbleVisible = false;
 
   // Reused each frame to avoid per-frame allocations.
   const targetQuaternion = new THREE.Quaternion();
@@ -1548,8 +1703,12 @@ export function createBouncingBallScene(canvas, options = {}) {
     catObject.state.agitationWindow = [];
     catObject.state.escapeTarget = null;
     catObject.state.lookTargetState = null;
+    catObject.state.exitDirection = null;
+    catObject.state.exitSpeed = 0;
+    catObject.state.exitAnnouncementFramesRemaining = 0;
     catObject.smoothedTargetYaw = 0;
     catRunAwayNotified = false;
+    hideCatSpeechBubble();
   }
 
   function seedObjectPositions() {
@@ -1639,16 +1798,63 @@ export function createBouncingBallScene(canvas, options = {}) {
     ball.root.scale.setScalar(ball.focusVisualScale);
   }
 
+  function resolveCatSpeechBubblePosition() {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (!width || !height || !bounds.width || !bounds.height) {
+      return { x: 0, y: 0 };
+    }
+
+    const state = catObject.state;
+    const pixelsPerWorldX = width / bounds.width;
+    const pixelsPerWorldY = height / bounds.height;
+    const centerX = ((state.x / bounds.width) + 0.5) * width;
+    const centerY = (0.5 - (state.y / bounds.height)) * height;
+    const inwardX = -(state.exitDirection?.x ?? 1);
+    const bubbleX = centerX + inwardX * state.radius * pixelsPerWorldX * 0.55;
+    const bubbleY = centerY - state.radius * pixelsPerWorldY * 0.8;
+
+    return {
+      x: clamp(bubbleX, 84, Math.max(84, width - 84)),
+      y: clamp(bubbleY, 42, Math.max(42, height - 92)),
+    };
+  }
+
+  function hideCatSpeechBubble() {
+    if (!catSpeechBubbleVisible) {
+      return;
+    }
+
+    catSpeechBubbleVisible = false;
+    options.onCatSpeechBubbleChange?.({ visible: false });
+  }
+
+  function updateCatSpeechBubble() {
+    if (
+      !catObject.root.visible
+      || catObject.state.catBehavior !== CAT_BEHAVIOR_ANNOUNCING
+    ) {
+      hideCatSpeechBubble();
+      return;
+    }
+
+    catSpeechBubbleVisible = true;
+    options.onCatSpeechBubbleChange?.({
+      visible: true,
+      ...resolveCatSpeechBubblePosition(),
+    });
+  }
+
   function orientFace(ball, settings, focusTarget) {
-    if (settings.lookMode === LOOK_MODE_CURSOR && pointerActive) {
-      const look = getLookDirection(pointer, ball.state, bounds, {
+    if (focusTarget && ball !== focusTarget) {
+      const look = getLookDirectionToPoint(focusTarget.state, ball.state, {
         maxLean: settings.maxLean,
         range: settings.lookRange,
         innerRange: settings.innerLookRange,
       });
       lookDir.set(look.x, look.y, look.z);
-    } else if (settings.lookMode === LOOK_MODE_FOCUS && focusTarget && ball !== focusTarget) {
-      const look = getLookDirectionToPoint(focusTarget.state, ball.state, {
+    } else if (settings.lookMode === LOOK_MODE_CURSOR && pointerActive) {
+      const look = getLookDirection(pointer, ball.state, bounds, {
         maxLean: settings.maxLean,
         range: settings.lookRange,
         innerRange: settings.innerLookRange,
@@ -1676,7 +1882,14 @@ export function createBouncingBallScene(canvas, options = {}) {
     const targetYaw = resolveCatTargetYaw(object, settings, {
       bounds,
     });
-    object.smoothedTargetYaw = resolveCatSmoothedYaw(object.smoothedTargetYaw, targetYaw);
+    const yawSmoothing = isCatExitSequenceActive(object.state)
+      ? CAT_EXIT_TARGET_YAW_SMOOTHING
+      : CAT_TARGET_YAW_SMOOTHING;
+    object.smoothedTargetYaw = resolveCatSmoothedYaw(
+      object.smoothedTargetYaw,
+      targetYaw,
+      yawSmoothing,
+    );
     const transform = resolveCatIdleTransform(
       object,
       elapsedSeconds,
@@ -1686,6 +1899,17 @@ export function createBouncingBallScene(canvas, options = {}) {
     object.modelAnchor.position.y = transform.bobY;
     object.modelAnchor.rotation.y = transform.rotationY;
     object.modelAnchor.rotation.z = transform.rotationZ;
+  }
+
+  function advanceCatExitSequenceAfterAnimation(settings) {
+    if (!isCatExitSequenceActive(catObject.state)) {
+      return;
+    }
+
+    const smoothedYaw = settings.catMotionEnabled
+      ? catObject.smoothedTargetYaw
+      : resolveCatInwardExitYaw(catObject.state);
+    catObject.state = resolveCatExitSequenceState(catObject.state, smoothedYaw);
   }
 
   function render() {
@@ -1711,6 +1935,7 @@ export function createBouncingBallScene(canvas, options = {}) {
         catPatiencePercent: settings.catPatiencePercent,
       });
     }
+    const catExitSequenceActive = catActive && isCatExitSequenceActive(catObject.state);
 
     // 1) Integrate motion and bounce off the viewport walls.
     activeObjects.forEach((object) => {
@@ -1718,6 +1943,10 @@ export function createBouncingBallScene(canvas, options = {}) {
         object.state = stepCatRunAwayState(object.state, {
           speedFactor: settings.speedFactor,
         });
+        return;
+      }
+
+      if (catExitSequenceActive) {
         return;
       }
 
@@ -1731,7 +1960,9 @@ export function createBouncingBallScene(canvas, options = {}) {
 
     // 2) Bounce balls off each other. The cat is kinematic relative to balls so
     // it can flee without stealing or injecting ball velocity.
-    resolveSceneObjectCollisions(activeObjects);
+    if (!catExitSequenceActive) {
+      resolveSceneObjectCollisions(activeObjects);
+    }
 
     // 3) Keep everything inside the walls (a collision can nudge a ball out),
     //    then place each ball before resolving focus targets.
@@ -1743,6 +1974,7 @@ export function createBouncingBallScene(canvas, options = {}) {
         object.root.position.set(object.state.x, object.state.y, 0);
         if (!catRunAwayNotified && isCatOutsideScene(object.state, bounds)) {
           catRunAwayNotified = true;
+          hideCatSpeechBubble();
           options.onCatRunAway?.();
         }
         return;
@@ -1753,11 +1985,14 @@ export function createBouncingBallScene(canvas, options = {}) {
       object.root.position.set(object.state.x, object.state.y, 0);
     });
 
-    const focusTarget = settings.lookMode === LOOK_MODE_FOCUS
-      ? getFocusTarget(activeObjects, settings)
-      : null;
+    const focusTarget = resolveSceneFocusTarget(activeObjects, settings, {
+      catExitSequenceActive,
+      catObject,
+    });
     sceneObjects.forEach((object) => {
-      applyFocusEffect(object, settings, focusTarget);
+      if (!catExitSequenceActive || object.type === CAT_OBJECT_ID) {
+        applyFocusEffect(object, settings, focusTarget);
+      }
       if (object.root.visible) {
         if (shouldOrientObject(object)) {
           orientFace(object, settings, focusTarget);
@@ -1765,6 +2000,10 @@ export function createBouncingBallScene(canvas, options = {}) {
         animateSceneObject(object, elapsedSeconds, settings);
       }
     });
+    if (catActive) {
+      advanceCatExitSequenceAfterAnimation(settings);
+    }
+    updateCatSpeechBubble();
 
     renderer.render(scene, camera);
     if (!destroyed) {
@@ -1788,6 +2027,7 @@ export function createBouncingBallScene(canvas, options = {}) {
       canvas.removeEventListener('pointermove', updatePointer);
       canvas.removeEventListener('pointerleave', handlePointerLeave);
       canvas.removeEventListener('click', handleClick);
+      hideCatSpeechBubble();
       ballsRoot.traverse((object) => {
         if (object.geometry) {
           object.geometry.dispose();
