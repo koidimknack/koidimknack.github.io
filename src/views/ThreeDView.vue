@@ -94,6 +94,29 @@
           </div>
 
           <div class="scene-control-row">
+            <label for="cat-motion-3d">Cat motion</label>
+            <input
+              id="cat-motion-3d"
+              v-model="catMotionEnabled"
+              type="checkbox"
+            >
+            <span class="control-value">{{ catMotionEnabled ? 'On' : 'Off' }}</span>
+          </div>
+
+          <div class="scene-control-row">
+            <label for="cat-patience-3d">Cat patience</label>
+            <input
+              id="cat-patience-3d"
+              v-model.number="catPatiencePercent"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+            >
+            <span class="control-value">{{ catPatiencePercent }}%</span>
+          </div>
+
+          <div class="scene-control-row">
             <label for="follow-radius-3d">Follow radius</label>
             <input
               id="follow-radius-3d"
@@ -158,21 +181,33 @@
     </div>
 
     <div class="scene-roster-drawer" :class="{ 'is-open': rosterOpen }">
-      <div class="scene-roster" aria-label="Ball roster">
+      <div class="scene-roster" aria-label="Scene roster">
         <button
-          v-for="color in BALL_COLOR_OPTIONS"
-          :key="color.id"
+          v-for="item in rosterItems"
+          :key="item.id"
           type="button"
           class="scene-roster-item"
           :class="{
-            'is-active': isBallActive(color.id),
-            'is-shaking': shakeRosterColorId === color.id,
+            'is-active': isRosterItemActive(item.id),
+            'is-shaking': shakeRosterItemId === item.id,
           }"
-          :aria-pressed="isBallActive(color.id)"
-          :aria-label="`${isBallActive(color.id) ? 'Hide' : 'Show'} ${color.label} ball`"
-          @click="toggleRosterBall(color.id)"
+          :aria-pressed="isRosterItemActive(item.id)"
+          :aria-label="`${isRosterItemActive(item.id) ? 'Hide' : 'Show'} ${item.name}`"
+          @click="toggleRosterItem(item.id)"
         >
-          <span class="scene-roster-swatch" :style="{ '--swatch-color': color.css }"></span>
+          <img
+            v-if="item.type === 'cat'"
+            class="scene-roster-cat"
+            src="/images/british-shorthair-cat.png"
+            alt=""
+            aria-hidden="true"
+            draggable="false"
+          >
+          <span
+            v-else
+            class="scene-roster-swatch"
+            :style="{ '--swatch-color': item.css }"
+          ></span>
         </button>
       </div>
 
@@ -200,16 +235,17 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   pickRandomActiveColorIds,
-  toggleActiveColorId,
+  toggleActiveRosterId,
 } from '../scene/ballRoster.js';
 import {
   BALL_COLOR_OPTIONS,
+  CAT_OBJECT_ID,
   LOOK_MODE_CURSOR,
   LOOK_MODE_FOCUS,
   createBouncingBallScene,
 } from '../scene/createBouncingBallScene.js';
 
-const DEFAULT_SPEED_FACTOR = 1;
+const DEFAULT_SPEED_FACTOR = 1.5;
 const DEFAULT_LOOK_MODE = LOOK_MODE_CURSOR;
 const DEFAULT_FOCUS_COLOR_ID = BALL_COLOR_OPTIONS[0].id;
 const DEFAULT_FOLLOW_RADIUS = 12.5;
@@ -217,7 +253,17 @@ const DEFAULT_BALL_RADIUS = 0.5;
 const DEFAULT_MAX_TILT_DEGREES = 55;
 const DEFAULT_TILT_SMOOTHING = 0.18;
 const DEFAULT_FOCUS_EFFECTS_ENABLED = true;
+const DEFAULT_CAT_MOTION_ENABLED = true;
+const DEFAULT_CAT_PATIENCE_PERCENT = 50;
 const DEFAULT_ACTIVE_BALL_COUNT = 4;
+const CAT_FOCUS_LABEL = 'Cat';
+const BALL_COLOR_IDS = BALL_COLOR_OPTIONS.map((color) => color.id);
+const CAT_ROSTER_ITEM = {
+  id: CAT_OBJECT_ID,
+  label: CAT_FOCUS_LABEL,
+  name: 'Cat',
+  type: 'cat',
+};
 
 const canvasRef = ref(null);
 const settingsOpen = ref(false);
@@ -230,15 +276,37 @@ const ballRadius = ref(DEFAULT_BALL_RADIUS);
 const maxTiltDegrees = ref(DEFAULT_MAX_TILT_DEGREES);
 const tiltSmoothing = ref(DEFAULT_TILT_SMOOTHING);
 const focusEffectsEnabled = ref(DEFAULT_FOCUS_EFFECTS_ENABLED);
-const activeColorIds = ref(pickRandomActiveColorIds(BALL_COLOR_OPTIONS, DEFAULT_ACTIVE_BALL_COUNT));
-const shakeRosterColorId = ref(null);
+const catMotionEnabled = ref(DEFAULT_CAT_MOTION_ENABLED);
+const catPatiencePercent = ref(DEFAULT_CAT_PATIENCE_PERCENT);
+const activeRosterIds = ref([
+  CAT_OBJECT_ID,
+  ...pickRandomActiveColorIds(BALL_COLOR_OPTIONS, DEFAULT_ACTIVE_BALL_COUNT),
+]);
+const shakeRosterItemId = ref(null);
 let sceneController;
 let shakeTimeout;
 
-const selectedFocusColorLabel = computed(() => (
-  BALL_COLOR_OPTIONS.find((color) => color.id === focusColorId.value)?.label
-  ?? BALL_COLOR_OPTIONS[0].label
+const rosterItems = computed(() => [
+  CAT_ROSTER_ITEM,
+  ...BALL_COLOR_OPTIONS.map((color) => ({
+    ...color,
+    name: `${color.label} ball`,
+    type: 'ball',
+  })),
+]);
+
+const activeColorIds = computed(() => (
+  activeRosterIds.value.filter((rosterId) => BALL_COLOR_IDS.includes(rosterId))
 ));
+
+const selectedFocusColorLabel = computed(() => {
+  if (focusColorId.value === CAT_OBJECT_ID) {
+    return CAT_FOCUS_LABEL;
+  }
+
+  return BALL_COLOR_OPTIONS.find((color) => color.id === focusColorId.value)?.label
+    ?? BALL_COLOR_OPTIONS[0].label;
+});
 
 const lookModeLabel = computed(() => (
   lookMode.value === LOOK_MODE_CURSOR ? 'Cursor' : selectedFocusColorLabel.value
@@ -253,33 +321,53 @@ function setLookTarget({ lookMode: nextLookMode, focusColorId: nextFocusColorId 
     lookMode.value = nextLookMode;
   }
 
-  if (BALL_COLOR_OPTIONS.some((color) => color.id === nextFocusColorId)) {
+  if (isValidFocusTargetId(nextFocusColorId)) {
     focusColorId.value = nextFocusColorId;
   }
 }
 
-function isBallActive(colorId) {
-  return activeColorIds.value.includes(colorId);
+function isValidFocusTargetId(targetId) {
+  return targetId === CAT_OBJECT_ID
+    || BALL_COLOR_OPTIONS.some((color) => color.id === targetId);
 }
 
-function triggerRosterShake(colorId) {
-  shakeRosterColorId.value = colorId;
+function isFocusTargetActive(targetId) {
+  return isRosterItemActive(targetId);
+}
+
+function isRosterItemActive(rosterId) {
+  return activeRosterIds.value.includes(rosterId);
+}
+
+function triggerRosterShake(rosterId) {
+  shakeRosterItemId.value = rosterId;
   window.clearTimeout(shakeTimeout);
   shakeTimeout = window.setTimeout(() => {
-    shakeRosterColorId.value = null;
+    shakeRosterItemId.value = null;
   }, 260);
 }
 
-function toggleRosterBall(colorId) {
-  const result = toggleActiveColorId(activeColorIds.value, colorId);
+function toggleRosterItem(rosterId) {
+  const result = toggleActiveRosterId(activeRosterIds.value, rosterId);
 
   if (result.rejected) {
-    triggerRosterShake(colorId);
+    triggerRosterShake(rosterId);
     return;
   }
 
-  activeColorIds.value = result.activeColorIds;
-  if (lookMode.value === LOOK_MODE_FOCUS && !activeColorIds.value.includes(focusColorId.value)) {
+  activeRosterIds.value = result.activeRosterIds;
+  if (lookMode.value === LOOK_MODE_FOCUS && !isFocusTargetActive(focusColorId.value)) {
+    lookMode.value = LOOK_MODE_CURSOR;
+  }
+}
+
+function deactivateRosterItem(rosterId) {
+  if (!isRosterItemActive(rosterId)) {
+    return;
+  }
+
+  activeRosterIds.value = activeRosterIds.value.filter((activeRosterId) => activeRosterId !== rosterId);
+  if (lookMode.value === LOOK_MODE_FOCUS && !isFocusTargetActive(focusColorId.value)) {
     lookMode.value = LOOK_MODE_CURSOR;
   }
 }
@@ -290,8 +378,8 @@ watch(ballRadius, (radius) => {
   }
 });
 
-watch([activeColorIds, focusColorId], () => {
-  if (lookMode.value === LOOK_MODE_FOCUS && !activeColorIds.value.includes(focusColorId.value)) {
+watch([activeRosterIds, focusColorId], () => {
+  if (lookMode.value === LOOK_MODE_FOCUS && !isFocusTargetActive(focusColorId.value)) {
     lookMode.value = LOOK_MODE_CURSOR;
   }
 });
@@ -301,6 +389,8 @@ async function resetSettings() {
   lookMode.value = DEFAULT_LOOK_MODE;
   focusColorId.value = DEFAULT_FOCUS_COLOR_ID;
   focusEffectsEnabled.value = DEFAULT_FOCUS_EFFECTS_ENABLED;
+  catMotionEnabled.value = DEFAULT_CAT_MOTION_ENABLED;
+  catPatiencePercent.value = DEFAULT_CAT_PATIENCE_PERCENT;
   ballRadius.value = DEFAULT_BALL_RADIUS;
   await nextTick();
   followRadius.value = DEFAULT_FOLLOW_RADIUS;
@@ -318,8 +408,12 @@ onMounted(() => {
     getLookMode: () => lookMode.value,
     getFocusColorId: () => focusColorId.value,
     getFocusEffectsEnabled: () => focusEffectsEnabled.value,
+    getCatMotionEnabled: () => catMotionEnabled.value,
+    getCatPatiencePercent: () => catPatiencePercent.value,
+    getCatActive: () => isRosterItemActive(CAT_OBJECT_ID),
     getActiveColorIds: () => activeColorIds.value,
     onLookTargetChange: setLookTarget,
+    onCatRunAway: () => deactivateRosterItem(CAT_OBJECT_ID),
   });
 });
 

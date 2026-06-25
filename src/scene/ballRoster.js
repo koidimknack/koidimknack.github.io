@@ -8,23 +8,32 @@ export function pickRandomActiveColorIds(colorOptions, count, random = Math.rand
   return colorIds.slice(0, Math.min(count, colorIds.length));
 }
 
-export function toggleActiveColorId(activeColorIds, colorId) {
-  if (!activeColorIds.includes(colorId)) {
+export function toggleActiveRosterId(activeRosterIds, rosterId) {
+  if (!activeRosterIds.includes(rosterId)) {
     return {
-      activeColorIds: [...activeColorIds, colorId],
+      activeRosterIds: [...activeRosterIds, rosterId],
       rejected: false,
     };
   }
 
-  if (activeColorIds.length <= 1) {
+  if (activeRosterIds.length <= 1) {
     return {
-      activeColorIds,
+      activeRosterIds,
       rejected: true,
     };
   }
 
   return {
-    activeColorIds: activeColorIds.filter((activeColorId) => activeColorId !== colorId),
+    activeRosterIds: activeRosterIds.filter((activeRosterId) => activeRosterId !== rosterId),
     rejected: false,
+  };
+}
+
+export function toggleActiveColorId(activeColorIds, colorId) {
+  const result = toggleActiveRosterId(activeColorIds, colorId);
+
+  return {
+    activeColorIds: result.activeRosterIds,
+    rejected: result.rejected,
   };
 }

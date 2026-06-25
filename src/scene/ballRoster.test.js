@@ -3,6 +3,7 @@ import { BALL_COLOR_OPTIONS } from './createBouncingBallScene.js';
 import {
   pickRandomActiveColorIds,
   toggleActiveColorId,
+  toggleActiveRosterId,
 } from './ballRoster.js';
 
 describe('pickRandomActiveColorIds', () => {
@@ -35,6 +36,22 @@ describe('toggleActiveColorId', () => {
   test('rejects deactivating the last active roster id', () => {
     expect(toggleActiveColorId(['yellow'], 'yellow')).toEqual({
       activeColorIds: ['yellow'],
+      rejected: true,
+    });
+  });
+});
+
+describe('toggleActiveRosterId', () => {
+  test('allows the cat roster id to be toggled like a ball id', () => {
+    expect(toggleActiveRosterId(['yellow', 'cat'], 'cat')).toEqual({
+      activeRosterIds: ['yellow'],
+      rejected: false,
+    });
+  });
+
+  test('rejects deactivating the last active roster item', () => {
+    expect(toggleActiveRosterId(['cat'], 'cat')).toEqual({
+      activeRosterIds: ['cat'],
       rejected: true,
     });
   });

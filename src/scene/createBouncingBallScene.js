@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import {
   clamp,
   getLookDirection,
@@ -11,17 +13,29 @@ import {
 
 export const LOOK_MODE_CURSOR = 'cursor';
 export const LOOK_MODE_FOCUS = 'focus';
+export const CAT_OBJECT_ID = 'cat';
+export const CAT_BEHAVIOR_WATCHING = 'watching';
+export const CAT_BEHAVIOR_FLEEING = 'fleeing';
+export const CAT_BEHAVIOR_RETREATING = 'retreating';
+export const CAT_BEHAVIOR_LEAVING = 'leaving';
 
 const VIEW_HEIGHT = 8; // world units shown vertically (orthographic frustum)
+const DEFAULT_SPEED_FACTOR = 1.5;
 const DEFAULT_BALL_RADIUS = 0.5;
+const DEFAULT_CAT_RADIUS = 0.75;
 const DEFAULT_TILT_SMOOTHING = 0.18;
 const DEFAULT_LOOK_RANGE = 12.5;
 const DEFAULT_MAX_LEAN = degreesToRadians(55);
 const DEFAULT_FOCUS_EFFECTS_ENABLED = true;
+const DEFAULT_CAT_MOTION_ENABLED = true;
+const DEFAULT_CAT_ACTIVE = true;
+const DEFAULT_CAT_PATIENCE_PERCENT = 50;
 const FOCUS_EFFECT_SMOOTHING = 0.12;
 const FOCUS_FRONT_LIGHT_INTENSITY = 0.58;
 const FOCUS_MATERIAL_EMISSIVE_INTENSITY = 0.18;
 const FOCUS_VISUAL_SCALE = 1.15;
+const CAT_BASE_FRONT_LIGHT_INTENSITY = FOCUS_FRONT_LIGHT_INTENSITY;
+const CAT_BASE_MATERIAL_EMISSIVE_INTENSITY = FOCUS_MATERIAL_EMISSIVE_INTENSITY;
 const LOOK_MODE_NONE = 'none';
 const MAX_LOOK_RANGE = 20;
 const MAX_SPEED_FACTOR = 4;
@@ -31,6 +45,46 @@ const MIN_TILT_SMOOTHING = 0.02;
 const MAX_TILT_SMOOTHING = 1;
 const MIN_MAX_LEAN = degreesToRadians(10);
 const MAX_MAX_LEAN = degreesToRadians(60);
+const CAT_MODEL_BASE_URL = '/models/cat/';
+const CAT_MODEL_FILE = '12222_Cat_v1_l3.obj';
+const CAT_MATERIAL_FILE = '12222_Cat_v1_l3.mtl';
+const CAT_MODEL_TARGET_SIZE = 1.65;
+const CAT_BOB_DISTANCE = 0.035;
+const CAT_TARGET_YAW_AMOUNT = 0.85;
+const CAT_MOVEMENT_YAW_AMOUNT = 0.3;
+const CAT_YAW_AMOUNT = 0.07;
+const CAT_ROLL_AMOUNT = 0.02;
+const CAT_MAX_TOTAL_YAW = 0.85;
+const CAT_AVOIDANCE_BUFFER = 1.35;
+const CAT_AVOIDANCE_STRENGTH = 0.02;
+const CAT_ESCAPE_CORRIDOR_BUFFER = 0.6;
+const CAT_ESCAPE_CORRIDOR_STRENGTH = 0.75;
+const CAT_ESCAPE_DETOUR_STRENGTH = 1.15;
+const CAT_ESCAPE_LOOKAHEAD_STEPS = 60;
+const CAT_ESCAPE_LOOKAHEAD_SAMPLE_INTERVAL = 6;
+const CAT_ESCAPE_SPEED_MULTIPLIER = 1.2;
+const CAT_ESCAPE_TARGET_STICKINESS = 0.35;
+const CAT_ESCAPE_TARGET_DISTANCE_PENALTY = 0.08;
+const CAT_MAX_AVOIDANCE_SPEED = 0.04;
+const CAT_MIN_AVOIDANCE_SPEED = 0.025;
+const CAT_MAX_AVOIDANCE_STEER = 0.012;
+const CAT_MAX_AVOIDANCE_SPEED_CHANGE = 0.006;
+const CAT_MAX_AVOIDANCE_TURN = 0.14;
+const CAT_AVOIDANCE_WALL_BUFFER = 0.9;
+const CAT_AVOIDANCE_EPSILON = 0.0001;
+const CAT_DANGER_BUFFER = 0.55;
+const CAT_SAFE_BUFFER = 0.95;
+const CAT_WATCHING_DECELERATION = 0.003;
+const CAT_TARGET_YAW_SMOOTHING = 0.14;
+const CAT_CORNER_RETREAT_DELAY_FRAMES = 120;
+const CAT_CORNER_SETTLE_DISTANCE = 0.45;
+const CAT_CORNER_RETREAT_SPEED_FACTOR = 0.9;
+const CAT_CORNER_RETREAT_DISTANCE_PENALTY = 1.2;
+const CAT_CORNER_RETREAT_TARGET_STICKINESS = 0.2;
+const CAT_CORNER_NEAR_DISTANCE_FACTOR = 2;
+const CAT_CORNER_SETTLE_SPEED_FACTOR = 0.35;
+const CAT_AGITATION_WINDOW_FRAMES = 600;
+const CAT_RUN_AWAY_SPEED_FACTOR = 0.5;
 
 export const BALL_COLOR_OPTIONS = [
   { id: 'yellow', label: 'Yellow', value: 0xffdf2e, css: '#ffdf2e' },
@@ -46,6 +100,7 @@ export const BALL_COLOR_OPTIONS = [
 ];
 
 const BALL_COLOR_IDS = BALL_COLOR_OPTIONS.map((color) => color.id);
+const FOCUS_TARGET_IDS = [...BALL_COLOR_IDS, CAT_OBJECT_ID];
 const FACE_COLOR = 0x1b1b1b;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -81,7 +136,7 @@ function readLookMode(options) {
 
 function readFocusColorId(getter) {
   const colorId = getter?.();
-  return BALL_COLOR_OPTIONS.some((color) => color.id === colorId)
+  return FOCUS_TARGET_IDS.includes(colorId)
     ? colorId
     : BALL_COLOR_OPTIONS[0].id;
 }
@@ -99,7 +154,7 @@ function readActiveColorIds(getter) {
     }
   });
 
-  return activeColorIds.length > 0 ? activeColorIds : [BALL_COLOR_IDS[0]];
+  return activeColorIds;
 }
 
 export function getHitBallColorId(point, balls) {
@@ -122,15 +177,1078 @@ export function getActiveBalls(balls, settings) {
   return balls.filter((ball) => activeColorIds.has(ball.colorId));
 }
 
-export function resolveFocusEffectState(ball, focusBall, settings) {
+export function getActiveSceneObjects(balls, catObject, settings) {
+  const activeObjects = getActiveBalls(balls, settings);
+  if (catObject && settings.catActive !== false) {
+    activeObjects.push(catObject);
+  }
+
+  return activeObjects;
+}
+
+export function getFocusTarget(sceneObjects, settings) {
+  return sceneObjects.find((object) => object.colorId === settings.focusColorId) ?? null;
+}
+
+export function resolveFocusEffectState(ball, focusTarget, settings) {
+  const baseFrontLightIntensity = ball.baseFocusFrontLightIntensity ?? 0;
+  const baseMaterialEmissiveIntensity = ball.baseFocusMaterialEmissiveIntensity ?? 0;
   const isFocused = settings.lookMode === LOOK_MODE_FOCUS
     && settings.focusEffectsEnabled
-    && ball === focusBall;
+    && ball === focusTarget;
 
   return {
-    frontLightIntensity: isFocused ? FOCUS_FRONT_LIGHT_INTENSITY : 0,
-    materialEmissiveIntensity: isFocused ? FOCUS_MATERIAL_EMISSIVE_INTENSITY : 0,
+    frontLightIntensity: baseFrontLightIntensity + (
+      isFocused ? FOCUS_FRONT_LIGHT_INTENSITY : 0
+    ),
+    materialEmissiveIntensity: baseMaterialEmissiveIntensity + (
+      isFocused ? FOCUS_MATERIAL_EMISSIVE_INTENSITY : 0
+    ),
     visualScale: isFocused ? FOCUS_VISUAL_SCALE : 1,
+  };
+}
+
+export function shouldOrientObject(object) {
+  return object.type !== CAT_OBJECT_ID;
+}
+
+function resolveKinematicCircleCollision(dynamicState, obstacleState) {
+  const speedBeforeCollision = Math.hypot(dynamicState.vx, dynamicState.vy);
+  const dx = obstacleState.x - dynamicState.x;
+  const dy = obstacleState.y - dynamicState.y;
+  const distance = Math.hypot(dx, dy);
+  const minDistance = dynamicState.radius + obstacleState.radius;
+
+  if (distance >= minDistance) {
+    return false;
+  }
+
+  let nx = 1;
+  let ny = 0;
+  if (distance > CAT_AVOIDANCE_EPSILON) {
+    nx = dx / distance;
+    ny = dy / distance;
+  } else {
+    const speed = Math.hypot(dynamicState.vx, dynamicState.vy);
+    if (speed > CAT_AVOIDANCE_EPSILON) {
+      nx = dynamicState.vx / speed;
+      ny = dynamicState.vy / speed;
+    }
+  }
+
+  const overlap = minDistance - distance;
+  dynamicState.x -= nx * overlap;
+  dynamicState.y -= ny * overlap;
+
+  const approach = dynamicState.vx * nx + dynamicState.vy * ny;
+  if (approach > 0) {
+    dynamicState.vx -= 2 * approach * nx;
+    dynamicState.vy -= 2 * approach * ny;
+  }
+
+  const speedAfterCollision = Math.hypot(dynamicState.vx, dynamicState.vy);
+  if (
+    speedBeforeCollision > CAT_AVOIDANCE_EPSILON
+    && speedAfterCollision > CAT_AVOIDANCE_EPSILON
+  ) {
+    const speedCorrection = speedBeforeCollision / speedAfterCollision;
+    dynamicState.vx *= speedCorrection;
+    dynamicState.vy *= speedCorrection;
+  }
+
+  return true;
+}
+
+export function resolveSceneObjectCollisions(sceneObjects) {
+  const collidingObjects = sceneObjects.filter((object) => object.type !== CAT_OBJECT_ID);
+  const catObjects = sceneObjects.filter((object) => object.type === CAT_OBJECT_ID);
+
+  for (let i = 0; i < collidingObjects.length; i += 1) {
+    for (let j = i + 1; j < collidingObjects.length; j += 1) {
+      resolveCircleCollision(collidingObjects[i].state, collidingObjects[j].state);
+    }
+  }
+
+  collidingObjects.forEach((object) => {
+    catObjects.forEach((catObject) => {
+      resolveKinematicCircleCollision(object.state, catObject.state);
+    });
+  });
+}
+
+function getWallInfluence(distance, buffer) {
+  if (!Number.isFinite(distance) || buffer <= 0) {
+    return 0;
+  }
+
+  return clamp(1 - distance / buffer, 0, 1);
+}
+
+function getWallInfluences(state, bounds, wallBuffer) {
+  if (!bounds?.width || !bounds?.height) {
+    return { left: 0, right: 0, top: 0, bottom: 0 };
+  }
+
+  const halfWidth = bounds.width / 2 - state.radius;
+  const halfHeight = bounds.height / 2 - state.radius;
+
+  return {
+    left: getWallInfluence(state.x + halfWidth, wallBuffer),
+    right: getWallInfluence(halfWidth - state.x, wallBuffer),
+    top: getWallInfluence(halfHeight - state.y, wallBuffer),
+    bottom: getWallInfluence(state.y + halfHeight, wallBuffer),
+  };
+}
+
+function getVerticalSlideDirection(state) {
+  if (Math.abs(state.y) > 0.2) {
+    return state.y > 0 ? -1 : 1;
+  }
+
+  if (Math.abs(state.vy) > CAT_AVOIDANCE_EPSILON) {
+    return Math.sign(state.vy);
+  }
+
+  return 1;
+}
+
+function getHorizontalSlideDirection(state) {
+  if (Math.abs(state.x) > 0.2) {
+    return state.x > 0 ? -1 : 1;
+  }
+
+  if (Math.abs(state.vx) > CAT_AVOIDANCE_EPSILON) {
+    return Math.sign(state.vx);
+  }
+
+  return 1;
+}
+
+function resolveWallAwarePush(pushX, pushY, state, bounds, wallBuffer) {
+  const wallInfluences = getWallInfluences(state, bounds, wallBuffer);
+  const verticalSlideDirection = getVerticalSlideDirection(state);
+  const horizontalSlideDirection = getHorizontalSlideDirection(state);
+  let adjustedPushX = pushX;
+  let adjustedPushY = pushY;
+
+  if (adjustedPushX > 0 && wallInfluences.right > 0) {
+    const blockedPush = adjustedPushX * wallInfluences.right;
+    adjustedPushX -= blockedPush;
+    adjustedPushY += blockedPush * verticalSlideDirection;
+  } else if (adjustedPushX < 0 && wallInfluences.left > 0) {
+    const blockedPush = -adjustedPushX * wallInfluences.left;
+    adjustedPushX += blockedPush;
+    adjustedPushY += blockedPush * verticalSlideDirection;
+  }
+
+  if (adjustedPushY > 0 && wallInfluences.top > 0) {
+    const blockedPush = adjustedPushY * wallInfluences.top;
+    adjustedPushY -= blockedPush;
+    adjustedPushX += blockedPush * horizontalSlideDirection;
+  } else if (adjustedPushY < 0 && wallInfluences.bottom > 0) {
+    const blockedPush = -adjustedPushY * wallInfluences.bottom;
+    adjustedPushY += blockedPush;
+    adjustedPushX += blockedPush * horizontalSlideDirection;
+  }
+
+  return { x: adjustedPushX, y: adjustedPushY, wallInfluences };
+}
+
+function dampOutwardWallVelocity(state, wallInfluences) {
+  let vx = state.vx;
+  let vy = state.vy;
+
+  if (vx > 0 && wallInfluences.right > 0) {
+    vx *= 1 - wallInfluences.right;
+  } else if (vx < 0 && wallInfluences.left > 0) {
+    vx *= 1 - wallInfluences.left;
+  }
+
+  if (vy > 0 && wallInfluences.top > 0) {
+    vy *= 1 - wallInfluences.top;
+  } else if (vy < 0 && wallInfluences.bottom > 0) {
+    vy *= 1 - wallInfluences.bottom;
+  }
+
+  return { vx, vy };
+}
+
+function limitVelocitySpeed(velocity, maxSpeed) {
+  const speed = Math.hypot(velocity.vx, velocity.vy);
+  if (speed <= maxSpeed || speed <= CAT_AVOIDANCE_EPSILON) {
+    return velocity;
+  }
+
+  const scale = maxSpeed / speed;
+  return {
+    vx: velocity.vx * scale,
+    vy: velocity.vy * scale,
+  };
+}
+
+function moveToward(value, target, maxDelta) {
+  if (!Number.isFinite(maxDelta)) {
+    return target;
+  }
+
+  const positiveDelta = Math.max(0, maxDelta);
+  const delta = target - value;
+  if (Math.abs(delta) <= positiveDelta) {
+    return target;
+  }
+
+  return value + Math.sign(delta) * positiveDelta;
+}
+
+function normalizeAngle(angle) {
+  return Math.atan2(Math.sin(angle), Math.cos(angle));
+}
+
+function rotateAngleToward(currentAngle, targetAngle, maxTurn) {
+  if (!Number.isFinite(maxTurn)) {
+    return targetAngle;
+  }
+
+  const turnLimit = Math.max(0, maxTurn);
+  const delta = normalizeAngle(targetAngle - currentAngle);
+  return currentAngle + clamp(delta, -turnLimit, turnLimit);
+}
+
+export function resolveCatSmoothedYaw(
+  currentYaw,
+  targetYaw,
+  smoothing = CAT_TARGET_YAW_SMOOTHING,
+) {
+  if (!Number.isFinite(currentYaw)) {
+    return targetYaw;
+  }
+
+  const amount = clamp(smoothing, 0, 1);
+  return currentYaw + normalizeAngle(targetYaw - currentYaw) * amount;
+}
+
+function getClosestBall(state, balls) {
+  let closestBall = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  balls.forEach((ball) => {
+    const distance = Math.hypot(state.x - ball.state.x, state.y - ball.state.y);
+    if (distance < closestDistance) {
+      closestBall = ball;
+      closestDistance = distance;
+    }
+  });
+
+  return { ball: closestBall, distance: closestDistance };
+}
+
+function normalizeDirection(x, y) {
+  const length = Math.hypot(x, y);
+  if (length <= CAT_AVOIDANCE_EPSILON) {
+    return { x: 0, y: 0 };
+  }
+
+  return { x: x / length, y: y / length };
+}
+
+function isSameTarget(a, b) {
+  return Boolean(a && b)
+    && Math.abs(a.x - b.x) <= CAT_AVOIDANCE_EPSILON
+    && Math.abs(a.y - b.y) <= CAT_AVOIDANCE_EPSILON;
+}
+
+function getCornerCandidateTargets(state, bounds) {
+  if (!bounds?.width || !bounds?.height) {
+    return [];
+  }
+
+  const halfWidth = Math.max(0, bounds.width / 2 - state.radius);
+  const halfHeight = Math.max(0, bounds.height / 2 - state.radius);
+
+  return [
+    { x: -halfWidth, y: halfHeight },
+    { x: halfWidth, y: halfHeight },
+    { x: -halfWidth, y: -halfHeight },
+    { x: halfWidth, y: -halfHeight },
+  ];
+}
+
+function getEscapeCandidateTargets(state, bounds) {
+  const corners = getCornerCandidateTargets(state, bounds);
+  if (corners.length === 0) {
+    return [];
+  }
+
+  const halfWidth = Math.max(0, bounds.width / 2 - state.radius);
+  const halfHeight = Math.max(0, bounds.height / 2 - state.radius);
+  const candidates = [
+    ...corners,
+    { x: 0, y: halfHeight },
+    { x: 0, y: -halfHeight },
+    { x: -halfWidth, y: 0 },
+    { x: halfWidth, y: 0 },
+  ];
+  const uniqueTargets = [];
+
+  candidates.forEach((candidate) => {
+    if (!uniqueTargets.some((target) => isSameTarget(target, candidate))) {
+      uniqueTargets.push(candidate);
+    }
+  });
+
+  return uniqueTargets;
+}
+
+function getNearestCornerTarget(state, bounds) {
+  const corners = getCornerCandidateTargets(state, bounds);
+  if (corners.length === 0) {
+    return null;
+  }
+
+  return corners.reduce((nearestCorner, corner) => {
+    const distance = Math.hypot(state.x - corner.x, state.y - corner.y);
+    if (distance < nearestCorner.distance) {
+      return { target: corner, distance };
+    }
+
+    return nearestCorner;
+  }, { target: null, distance: Number.POSITIVE_INFINITY });
+}
+
+function getDistanceToNearestCorner(state, bounds) {
+  return getNearestCornerTarget(state, bounds)?.distance ?? Number.POSITIVE_INFINITY;
+}
+
+function isCatInCorner(state, bounds, settleDistance) {
+  return getDistanceToNearestCorner(state, bounds) <= settleDistance;
+}
+
+function resolveNearCornerRetreatTarget(state, bounds, settleDistance) {
+  const nearestCorner = getNearestCornerTarget(state, bounds);
+  const nearDistance = settleDistance * CAT_CORNER_NEAR_DISTANCE_FACTOR;
+  if (!nearestCorner || nearestCorner.distance > nearDistance) {
+    return null;
+  }
+
+  return nearestCorner.target;
+}
+
+function resolveCornerSettleState(state, target, {
+  maxSpeed,
+  maxSpeedChange,
+} = {}) {
+  const dx = target.x - state.x;
+  const dy = target.y - state.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= CAT_AVOIDANCE_EPSILON) {
+    return {
+      ...state,
+      vx: 0,
+      vy: 0,
+      catBehavior: CAT_BEHAVIOR_WATCHING,
+      escapeTarget: null,
+      lookTargetState: null,
+    };
+  }
+
+  const currentSpeed = Math.hypot(state.vx ?? 0, state.vy ?? 0);
+  const desiredSpeed = Math.min(maxSpeed, distance);
+  const targetSpeed = moveToward(currentSpeed, desiredSpeed, maxSpeedChange);
+
+  return {
+    ...state,
+    vx: (dx / distance) * targetSpeed,
+    vy: (dy / distance) * targetSpeed,
+    catBehavior: CAT_BEHAVIOR_RETREATING,
+    escapeTarget: target,
+    lookTargetState: null,
+  };
+}
+
+function resolveCatAgitationState(state, isAgitated, windowFrames) {
+  const resolvedWindowFrames = Math.max(1, Math.floor(windowFrames));
+  const previousWindow = Array.isArray(state.agitationWindow)
+    ? state.agitationWindow.slice(-(resolvedWindowFrames - 1))
+    : [];
+  const agitationWindow = [
+    ...previousWindow,
+    isAgitated ? 1 : 0,
+  ];
+
+  return {
+    agitationFrames: isAgitated ? (state.agitationFrames ?? 0) + 1 : 0,
+    agitationWindow,
+  };
+}
+
+function shouldCatRunAwayFromAgitation(state, windowFrames, patiencePercent) {
+  const resolvedWindowFrames = Math.max(1, Math.floor(windowFrames));
+  const resolvedPatiencePercent = clamp(patiencePercent, 0, 100);
+  if (resolvedPatiencePercent >= 100) {
+    return false;
+  }
+
+  const agitationWindow = Array.isArray(state.agitationWindow)
+    ? state.agitationWindow
+    : [];
+
+  if (resolvedPatiencePercent <= 0) {
+    return Boolean(agitationWindow[agitationWindow.length - 1]);
+  }
+
+  if (agitationWindow.length < resolvedWindowFrames) {
+    return false;
+  }
+
+  const agitatedFrames = agitationWindow.reduce((total, frame) => total + (frame ? 1 : 0), 0);
+  return (agitatedFrames / resolvedWindowFrames) * 100 > resolvedPatiencePercent;
+}
+
+function resolveCatExitDirection(state, bounds) {
+  if (!bounds?.width || !bounds?.height) {
+    return (state.vx ?? 0) < 0 ? { x: -1, y: 0 } : { x: 1, y: 0 };
+  }
+
+  const halfWidth = bounds.width / 2;
+  const rightDistance = halfWidth - state.x;
+  const leftDistance = state.x + halfWidth;
+
+  return rightDistance <= leftDistance ? { x: 1, y: 0 } : { x: -1, y: 0 };
+}
+
+function resolveMedianBallSpeed(balls) {
+  if (balls.length === 0) {
+    return 0;
+  }
+
+  const speeds = balls
+    .map((ball) => Math.hypot(ball.state.vx ?? 0, ball.state.vy ?? 0))
+    .sort((a, b) => a - b);
+  const middleIndex = Math.floor(speeds.length / 2);
+
+  return speeds.length % 2 === 0
+    ? (speeds[middleIndex - 1] + speeds[middleIndex]) / 2
+    : speeds[middleIndex];
+}
+
+function resolveCatRunAwaySpeed(balls) {
+  return resolveMedianBallSpeed(balls) * CAT_RUN_AWAY_SPEED_FACTOR;
+}
+
+function resolveCatRunAwayState(state, bounds, {
+  speed,
+} = {}) {
+  const direction = resolveCatExitDirection(state, bounds);
+  const resolvedSpeed = Math.max(0, speed ?? 0);
+
+  return {
+    ...state,
+    vx: direction.x * resolvedSpeed,
+    vy: direction.y * resolvedSpeed,
+    catBehavior: CAT_BEHAVIOR_LEAVING,
+    escapeTarget: null,
+    lookTargetState: null,
+  };
+}
+
+export function stepCatRunAwayState(state, { speedFactor = 1 } = {}) {
+  return {
+    ...state,
+    x: state.x + (state.vx ?? 0) * speedFactor,
+    y: state.y + (state.vy ?? 0) * speedFactor,
+  };
+}
+
+export function isCatOutsideScene(state, bounds) {
+  if (!bounds?.width || !bounds?.height) {
+    return false;
+  }
+
+  const halfWidth = bounds.width / 2;
+  const halfHeight = bounds.height / 2;
+  return state.x - state.radius > halfWidth
+    || state.x + state.radius < -halfWidth
+    || state.y - state.radius > halfHeight
+    || state.y + state.radius < -halfHeight;
+}
+
+function advancePredictedBalls(ballStates, bounds, steps, speedFactor) {
+  for (let i = 0; i < steps; i += 1) {
+    ballStates.forEach((state, index) => {
+      ballStates[index] = stepBall(state, {
+        width: bounds.width,
+        height: bounds.height,
+        radius: state.radius,
+        speedFactor,
+      });
+    });
+  }
+}
+
+function scoreEscapeTarget(state, balls, target, bounds, {
+  horizonSteps,
+  maxSpeed,
+  sampleInterval,
+  speedFactor,
+  distancePenalty = CAT_ESCAPE_TARGET_DISTANCE_PENALTY,
+}) {
+  const dx = target.x - state.x;
+  const dy = target.y - state.y;
+  const targetDistance = Math.hypot(dx, dy);
+  const direction = normalizeDirection(dx, dy);
+  const sampleStep = Math.max(1, Math.floor(sampleInterval));
+  const totalSteps = Math.max(0, Math.floor(horizonSteps));
+  const sampleSteps = [];
+  const predictedBallStates = balls.map((ball) => ({ ...ball.state }));
+  let previousStep = 0;
+  let minimumClearance = Number.POSITIVE_INFINITY;
+  let totalClearance = 0;
+  let sampleCount = 0;
+
+  for (let step = 0; step < totalSteps; step += sampleStep) {
+    sampleSteps.push(step);
+  }
+  if (sampleSteps[sampleSteps.length - 1] !== totalSteps) {
+    sampleSteps.push(totalSteps);
+  }
+
+  sampleSteps.forEach((step) => {
+    advancePredictedBalls(predictedBallStates, bounds, step - previousStep, speedFactor);
+    previousStep = step;
+
+    const catTravel = Math.min(targetDistance, maxSpeed * speedFactor * step);
+    const catX = state.x + direction.x * catTravel;
+    const catY = state.y + direction.y * catTravel;
+
+    predictedBallStates.forEach((ballState) => {
+      const clearance = Math.hypot(catX - ballState.x, catY - ballState.y)
+        - state.radius
+        - ballState.radius;
+      minimumClearance = Math.min(minimumClearance, clearance);
+      totalClearance += Math.min(clearance, VIEW_HEIGHT);
+      sampleCount += 1;
+    });
+  });
+
+  const averageClearance = sampleCount > 0 ? totalClearance / sampleCount : 0;
+  const currentVx = state.vx ?? 0;
+  const currentVy = state.vy ?? 0;
+  const currentSpeed = Math.hypot(currentVx, currentVy);
+  const turnPenalty = currentSpeed > CAT_AVOIDANCE_EPSILON
+    ? 1 - (((currentVx * direction.x) + (currentVy * direction.y)) / currentSpeed)
+    : 0;
+
+  if (sampleCount === 0) {
+    return -targetDistance * distancePenalty - turnPenalty * 0.25;
+  }
+
+  return (
+    minimumClearance * 8
+    + averageClearance * 1.5
+    - targetDistance * distancePenalty
+    - turnPenalty * 0.25
+  );
+}
+
+export function resolveCatMaxSpeed(balls, {
+  fallback = CAT_MAX_AVOIDANCE_SPEED,
+  minimum = CAT_MIN_AVOIDANCE_SPEED,
+  multiplier = CAT_ESCAPE_SPEED_MULTIPLIER,
+} = {}) {
+  let maxBallSpeed = 0;
+
+  balls.forEach((ball) => {
+    maxBallSpeed = Math.max(
+      maxBallSpeed,
+      Math.hypot(ball.state.vx ?? 0, ball.state.vy ?? 0),
+    );
+  });
+
+  if (maxBallSpeed <= CAT_AVOIDANCE_EPSILON) {
+    return fallback;
+  }
+
+  return Math.max(minimum, maxBallSpeed * multiplier);
+}
+
+export function resolvePredictedEscapeTarget(state, balls, bounds, {
+  horizonSteps = CAT_ESCAPE_LOOKAHEAD_STEPS,
+  maxSpeed = resolveCatMaxSpeed(balls),
+  previousTarget = state.escapeTarget,
+  sampleInterval = CAT_ESCAPE_LOOKAHEAD_SAMPLE_INTERVAL,
+  speedFactor = 1,
+  stickiness = CAT_ESCAPE_TARGET_STICKINESS,
+} = {}) {
+  const candidates = getEscapeCandidateTargets(state, bounds);
+  if (candidates.length === 0 || balls.length === 0) {
+    return resolveSafestCornerTarget(state, balls, bounds);
+  }
+
+  const scoredTargets = candidates.map((target) => ({
+    target,
+    score: scoreEscapeTarget(state, balls, target, bounds, {
+      horizonSteps,
+      maxSpeed,
+      sampleInterval,
+      speedFactor,
+      distancePenalty: CAT_ESCAPE_TARGET_DISTANCE_PENALTY,
+    }),
+  }));
+  let best = scoredTargets[0];
+
+  scoredTargets.forEach((scoredTarget) => {
+    if (scoredTarget.score > best.score) {
+      best = scoredTarget;
+    }
+  });
+
+  const previous = scoredTargets.find((scoredTarget) => (
+    isSameTarget(scoredTarget.target, previousTarget)
+  ));
+  if (previous && previous.score >= best.score - stickiness) {
+    return previous.target;
+  }
+
+  return best.target;
+}
+
+export function resolveSafeCornerRetreatTarget(state, balls, bounds, {
+  horizonSteps = CAT_ESCAPE_LOOKAHEAD_STEPS,
+  maxSpeed = resolveCatMaxSpeed(balls) * CAT_CORNER_RETREAT_SPEED_FACTOR,
+  previousTarget = state.escapeTarget,
+  sampleInterval = CAT_ESCAPE_LOOKAHEAD_SAMPLE_INTERVAL,
+  speedFactor = 1,
+  stickiness = CAT_CORNER_RETREAT_TARGET_STICKINESS,
+  distancePenalty = CAT_CORNER_RETREAT_DISTANCE_PENALTY,
+} = {}) {
+  const candidates = getCornerCandidateTargets(state, bounds);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const scoredTargets = candidates.map((target) => ({
+    target,
+    score: scoreEscapeTarget(state, balls, target, bounds, {
+      horizonSteps,
+      maxSpeed,
+      sampleInterval,
+      speedFactor,
+      distancePenalty,
+    }),
+  }));
+  let best = scoredTargets[0];
+
+  scoredTargets.forEach((scoredTarget) => {
+    if (scoredTarget.score > best.score) {
+      best = scoredTarget;
+    }
+  });
+
+  const previous = scoredTargets.find((scoredTarget) => (
+    isSameTarget(scoredTarget.target, previousTarget)
+  ));
+  if (previous && previous.score >= best.score - stickiness) {
+    return previous.target;
+  }
+
+  return best.target;
+}
+
+export function resolveSafestCornerTarget(state, balls, bounds) {
+  if (!bounds?.width || !bounds?.height || balls.length === 0) {
+    return null;
+  }
+
+  const halfWidth = Math.max(0, bounds.width / 2 - state.radius);
+  const halfHeight = Math.max(0, bounds.height / 2 - state.radius);
+  const corners = [
+    { x: -halfWidth, y: halfHeight },
+    { x: halfWidth, y: halfHeight },
+    { x: -halfWidth, y: -halfHeight },
+    { x: halfWidth, y: -halfHeight },
+  ];
+  let bestCorner = null;
+  let bestNearestDistance = Number.NEGATIVE_INFINITY;
+  let bestTotalDistance = Number.NEGATIVE_INFINITY;
+
+  corners.forEach((corner) => {
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    let totalDistance = 0;
+
+    balls.forEach((ball) => {
+      const distance = Math.hypot(corner.x - ball.state.x, corner.y - ball.state.y);
+      nearestDistance = Math.min(nearestDistance, distance);
+      totalDistance += distance;
+    });
+
+    if (
+      nearestDistance > bestNearestDistance + CAT_AVOIDANCE_EPSILON
+      || (
+        Math.abs(nearestDistance - bestNearestDistance) <= CAT_AVOIDANCE_EPSILON
+        && totalDistance > bestTotalDistance
+      )
+    ) {
+      bestCorner = corner;
+      bestNearestDistance = nearestDistance;
+      bestTotalDistance = totalDistance;
+    }
+  });
+
+  return bestCorner;
+}
+
+export function resolveCatFleeDirection(state, balls, bounds, {
+  target = resolveSafestCornerTarget(state, balls, bounds),
+  corridorBuffer = CAT_ESCAPE_CORRIDOR_BUFFER,
+  detourStrength = CAT_ESCAPE_DETOUR_STRENGTH,
+} = {}) {
+  if (!target) {
+    return { x: 0, y: 0 };
+  }
+
+  const dx = target.x - state.x;
+  const dy = target.y - state.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= CAT_AVOIDANCE_EPSILON) {
+    return { x: 0, y: 0 };
+  }
+
+  const forwardX = dx / distance;
+  const forwardY = dy / distance;
+  let steerX = forwardX;
+  let steerY = forwardY;
+
+  balls.forEach((ball) => {
+    const ballX = ball.state.x - state.x;
+    const ballY = ball.state.y - state.y;
+    const projection = (ballX * forwardX) + (ballY * forwardY);
+
+    if (projection <= 0 || projection >= distance) {
+      return;
+    }
+
+    const closestX = state.x + forwardX * projection;
+    const closestY = state.y + forwardY * projection;
+    const awayX = closestX - ball.state.x;
+    const awayY = closestY - ball.state.y;
+    const awayDistance = Math.hypot(awayX, awayY);
+    const clearance = state.radius + ball.state.radius + corridorBuffer;
+
+    if (awayDistance >= clearance) {
+      return;
+    }
+
+    let detourX = awayX;
+    let detourY = awayY;
+    if (awayDistance <= CAT_AVOIDANCE_EPSILON) {
+      detourX = -forwardY;
+      detourY = forwardX;
+    }
+
+    const detour = normalizeDirection(detourX, detourY);
+    const proximity = 1 - awayDistance / clearance;
+    const ahead = 1 - projection / distance;
+    const weight = proximity * proximity * (0.35 + ahead * 0.65) * detourStrength;
+    steerX += detour.x * weight;
+    steerY += detour.y * weight;
+  });
+
+  return normalizeDirection(steerX, steerY);
+}
+
+function resolveWatchingState(state, closestBall, maxSpeedChange) {
+  const speed = Math.hypot(state.vx, state.vy);
+  const restSpeed = Math.max(CAT_AVOIDANCE_EPSILON, maxSpeedChange * 2);
+  if (speed <= restSpeed) {
+    return {
+      ...state,
+      vx: 0,
+      vy: 0,
+      catBehavior: CAT_BEHAVIOR_WATCHING,
+      escapeTarget: null,
+      lookTargetState: closestBall?.state ?? null,
+    };
+  }
+
+  const nextSpeed = moveToward(speed, 0, maxSpeedChange);
+  const scale = nextSpeed / speed;
+
+  return {
+    ...state,
+    vx: Math.abs(nextSpeed) <= CAT_AVOIDANCE_EPSILON ? 0 : state.vx * scale,
+    vy: Math.abs(nextSpeed) <= CAT_AVOIDANCE_EPSILON ? 0 : state.vy * scale,
+    catBehavior: CAT_BEHAVIOR_WATCHING,
+    escapeTarget: null,
+    lookTargetState: closestBall?.state ?? null,
+  };
+}
+
+export function resolveCatAvoidanceState(object, balls, {
+  avoidanceBuffer = CAT_AVOIDANCE_BUFFER,
+  strength = CAT_AVOIDANCE_STRENGTH,
+  maxSpeed = null,
+  minSpeed = CAT_MIN_AVOIDANCE_SPEED,
+  maxSteer = CAT_MAX_AVOIDANCE_STEER,
+  maxSpeedChange = CAT_MAX_AVOIDANCE_SPEED_CHANGE,
+  maxTurn = CAT_MAX_AVOIDANCE_TURN,
+  bounds = null,
+  wallBuffer = CAT_AVOIDANCE_WALL_BUFFER,
+  dangerBuffer = CAT_DANGER_BUFFER,
+  safeBuffer = CAT_SAFE_BUFFER,
+  watchingDeceleration = CAT_WATCHING_DECELERATION,
+  cornerRetreatDelayFrames = CAT_CORNER_RETREAT_DELAY_FRAMES,
+  cornerSettleDistance = CAT_CORNER_SETTLE_DISTANCE,
+  cornerRetreatSpeedFactor = CAT_CORNER_RETREAT_SPEED_FACTOR,
+  cornerRetreatDistancePenalty = CAT_CORNER_RETREAT_DISTANCE_PENALTY,
+  agitationWindowFrames = CAT_AGITATION_WINDOW_FRAMES,
+  catPatiencePercent = DEFAULT_CAT_PATIENCE_PERCENT,
+} = {}) {
+  if (object.type !== CAT_OBJECT_ID) {
+    return object.state;
+  }
+
+  if (object.state.catBehavior === CAT_BEHAVIOR_LEAVING) {
+    return object.state;
+  }
+
+  const closest = getClosestBall(object.state, balls);
+  const closestBall = closest.ball ?? null;
+  const hasBounds = Boolean(bounds?.width && bounds?.height);
+  const isInCorner = hasBounds && isCatInCorner(object.state, bounds, cornerSettleDistance);
+  const cornerAwayFrames = hasBounds
+    ? (isInCorner ? 0 : (object.state.cornerAwayFrames ?? 0) + 1)
+    : (object.state.cornerAwayFrames ?? 0);
+  const stateWithCornerTimer = {
+    ...object.state,
+    cornerAwayFrames,
+  };
+  const resolvedMaxSpeed = Number.isFinite(maxSpeed)
+    ? Math.max(0, maxSpeed)
+    : resolveCatMaxSpeed(balls);
+  const dangerDistance = closestBall
+    ? object.state.radius + closestBall.state.radius + dangerBuffer
+    : Number.NEGATIVE_INFINITY;
+  const safeDistance = closestBall
+    ? object.state.radius + closestBall.state.radius + safeBuffer
+    : Number.NEGATIVE_INFINITY;
+  const wasFleeing = object.state.catBehavior === CAT_BEHAVIOR_FLEEING;
+  const shouldFlee = Boolean(closestBall) && (
+    closest.distance <= dangerDistance
+    || (wasFleeing && closest.distance < safeDistance)
+  );
+  const agitationState = resolveCatAgitationState(
+    object.state,
+    shouldFlee,
+    agitationWindowFrames,
+  );
+  const stateWithTimers = {
+    ...stateWithCornerTimer,
+    ...agitationState,
+  };
+
+  if (
+    shouldFlee
+    && shouldCatRunAwayFromAgitation(
+      stateWithTimers,
+      agitationWindowFrames,
+      catPatiencePercent,
+    )
+  ) {
+    return resolveCatRunAwayState(stateWithTimers, bounds, {
+      speed: resolveCatRunAwaySpeed(balls),
+    });
+  }
+
+  const resolvedRetreatDelayFrames = Number.isFinite(cornerRetreatDelayFrames)
+    ? Math.max(0, Math.floor(cornerRetreatDelayFrames))
+    : CAT_CORNER_RETREAT_DELAY_FRAMES;
+  const shouldRetreatToCorner = !shouldFlee
+    && hasBounds
+    && !isInCorner
+    && cornerAwayFrames >= resolvedRetreatDelayFrames;
+
+  if (!shouldFlee && !shouldRetreatToCorner) {
+    return resolveWatchingState(stateWithTimers, closestBall, watchingDeceleration);
+  }
+
+  const retreatSpeedFactor = clamp(cornerRetreatSpeedFactor, 0, 1);
+  const activeMaxSpeed = shouldRetreatToCorner
+    ? resolvedMaxSpeed * retreatSpeedFactor
+    : resolvedMaxSpeed;
+  const activeMinSpeed = Math.min(minSpeed, activeMaxSpeed);
+  const nearCornerRetreatTarget = shouldRetreatToCorner
+    ? resolveNearCornerRetreatTarget(stateWithTimers, bounds, cornerSettleDistance)
+    : null;
+
+  if (nearCornerRetreatTarget) {
+    return resolveCornerSettleState(stateWithTimers, nearCornerRetreatTarget, {
+      maxSpeed: activeMaxSpeed * CAT_CORNER_SETTLE_SPEED_FACTOR,
+      maxSpeedChange,
+    });
+  }
+
+  let pushX = 0;
+  let pushY = 0;
+
+  balls.forEach((ball) => {
+    const dx = object.state.x - ball.state.x;
+    const dy = object.state.y - ball.state.y;
+    const distance = Math.hypot(dx, dy);
+    const shyDistance = object.state.radius + ball.state.radius + avoidanceBuffer;
+
+    if (distance >= shyDistance) {
+      return;
+    }
+
+    let directionX = 1;
+    let directionY = 0;
+    if (distance > 0.0001) {
+      directionX = dx / distance;
+      directionY = dy / distance;
+    }
+
+    const proximity = 1 - distance / shyDistance;
+    const weight = proximity * proximity;
+    pushX += directionX * weight;
+    pushY += directionY * weight;
+  });
+
+  const escapeTarget = shouldRetreatToCorner
+    ? resolveSafeCornerRetreatTarget(stateWithTimers, balls, bounds, {
+      maxSpeed: activeMaxSpeed,
+      previousTarget: object.state.escapeTarget,
+      distancePenalty: cornerRetreatDistancePenalty,
+    })
+    : resolvePredictedEscapeTarget(stateWithTimers, balls, bounds, {
+      maxSpeed: resolvedMaxSpeed,
+      previousTarget: object.state.escapeTarget,
+    });
+
+  if (shouldRetreatToCorner && !escapeTarget) {
+    return resolveWatchingState(stateWithTimers, closestBall, watchingDeceleration);
+  }
+
+  const fleeDirection = escapeTarget
+    ? resolveCatFleeDirection(stateWithTimers, balls, bounds, {
+      target: escapeTarget,
+    })
+    : { x: 0, y: 0 };
+  const wallAwarePush = resolveWallAwarePush(
+    pushX + fleeDirection.x * CAT_ESCAPE_CORRIDOR_STRENGTH,
+    pushY + fleeDirection.y * CAT_ESCAPE_CORRIDOR_STRENGTH,
+    stateWithTimers,
+    bounds,
+    wallBuffer,
+  );
+  const pushMagnitude = Math.hypot(wallAwarePush.x, wallAwarePush.y);
+
+  if (pushMagnitude <= CAT_AVOIDANCE_EPSILON) {
+    return shouldRetreatToCorner
+      ? resolveWatchingState(stateWithTimers, closestBall, watchingDeceleration)
+      : stateWithTimers;
+  }
+
+  const currentVelocity = limitVelocitySpeed(
+    dampOutwardWallVelocity(stateWithTimers, wallAwarePush.wallInfluences),
+    activeMaxSpeed,
+  );
+  const currentSpeed = Math.hypot(currentVelocity.vx, currentVelocity.vy);
+  const desiredSpeed = clamp(
+    currentSpeed + Math.min(pushMagnitude, 1) * strength,
+    activeMinSpeed,
+    activeMaxSpeed,
+  );
+  const targetSpeed = moveToward(currentSpeed, desiredSpeed, maxSpeedChange);
+  const targetAngle = Math.atan2(wallAwarePush.y, wallAwarePush.x);
+  const currentAngle = currentSpeed > CAT_AVOIDANCE_EPSILON
+    ? Math.atan2(currentVelocity.vy, currentVelocity.vx)
+    : targetAngle;
+  const nextAngle = rotateAngleToward(currentAngle, targetAngle, maxTurn);
+  const targetVx = Math.cos(nextAngle) * targetSpeed;
+  const targetVy = Math.sin(nextAngle) * targetSpeed;
+  let steerX = targetVx - currentVelocity.vx;
+  let steerY = targetVy - currentVelocity.vy;
+  const steerDistance = Math.hypot(steerX, steerY);
+
+  if (steerDistance > maxSteer) {
+    const scale = maxSteer / steerDistance;
+    steerX *= scale;
+    steerY *= scale;
+  }
+
+  const nextState = {
+    ...stateWithTimers,
+    vx: currentVelocity.vx + steerX,
+    vy: currentVelocity.vy + steerY,
+    catBehavior: shouldRetreatToCorner ? CAT_BEHAVIOR_RETREATING : CAT_BEHAVIOR_FLEEING,
+    escapeTarget,
+    lookTargetState: null,
+  };
+  const speed = Math.hypot(nextState.vx, nextState.vy);
+
+  if (speed > activeMaxSpeed) {
+    const scale = activeMaxSpeed / speed;
+    nextState.vx *= scale;
+    nextState.vy *= scale;
+  }
+
+  return nextState;
+}
+
+export function resolveCatTargetYaw(object, settings, {
+  bounds: sceneBounds = { width: 0, height: 0 },
+} = {}) {
+  if (object.type !== CAT_OBJECT_ID || !settings.catMotionEnabled) {
+    return 0;
+  }
+
+  if (
+    object.state.catBehavior === CAT_BEHAVIOR_FLEEING
+    || object.state.catBehavior === CAT_BEHAVIOR_RETREATING
+    || object.state.catBehavior === CAT_BEHAVIOR_LEAVING
+  ) {
+    const speed = Math.hypot(object.state.vx, object.state.vy);
+    return speed > CAT_AVOIDANCE_EPSILON
+      ? (object.state.vx / speed) * CAT_TARGET_YAW_AMOUNT
+      : 0;
+  }
+
+  if (object.state.lookTargetState) {
+    const look = getLookDirectionToPoint(object.state.lookTargetState, object.state, {
+      maxLean: settings.maxLean,
+      range: settings.lookRange,
+      innerRange: settings.innerLookRange,
+    });
+    return look.x * CAT_TARGET_YAW_AMOUNT;
+  }
+
+  return 0;
+}
+
+export function resolveCatIdleTransform(object, elapsedSeconds, settings, targetYaw = 0) {
+  if (object.type !== CAT_OBJECT_ID || !settings.catMotionEnabled) {
+    return {
+      bobY: 0,
+      rotationY: 0,
+      rotationZ: 0,
+    };
+  }
+
+  const speed = Math.hypot(object.state?.vx ?? 0, object.state?.vy ?? 0);
+  const movementYaw = speed > 0.0001
+    ? ((object.state?.vx ?? 0) / speed) * CAT_MOVEMENT_YAW_AMOUNT
+    : 0;
+  const movementInfluence = Math.abs(targetYaw) > 0.001 ? 0.35 : 1;
+  const idleYaw = Math.sin((elapsedSeconds * 1.3) + object.idlePhase) * CAT_YAW_AMOUNT;
+
+  return {
+    bobY: Math.sin((elapsedSeconds * 2.2) + object.idlePhase) * CAT_BOB_DISTANCE,
+    rotationY: clamp(
+      targetYaw + (movementYaw * movementInfluence) + idleYaw,
+      -CAT_MAX_TOTAL_YAW,
+      CAT_MAX_TOTAL_YAW,
+    ),
+    rotationZ: Math.sin((elapsedSeconds * 1.8) + object.idlePhase) * CAT_ROLL_AMOUNT,
   };
 }
 
@@ -143,7 +1261,7 @@ export function resolveSceneSettings(options = {}) {
   const lookMode = readLookMode(options);
 
   return {
-    speedFactor: clamp(readOption(options.getSpeedFactor, 1), 0, MAX_SPEED_FACTOR),
+    speedFactor: clamp(readOption(options.getSpeedFactor, DEFAULT_SPEED_FACTOR), 0, MAX_SPEED_FACTOR),
     ballRadius,
     lookRange: clamp(readOption(options.getLookRange, DEFAULT_LOOK_RANGE), ballRadius, MAX_LOOK_RANGE),
     innerLookRange: ballRadius,
@@ -159,6 +1277,16 @@ export function resolveSceneSettings(options = {}) {
     focusEffectsEnabled: readBooleanOption(
       options.getFocusEffectsEnabled,
       DEFAULT_FOCUS_EFFECTS_ENABLED,
+    ),
+    catMotionEnabled: readBooleanOption(
+      options.getCatMotionEnabled,
+      DEFAULT_CAT_MOTION_ENABLED,
+    ),
+    catActive: readBooleanOption(options.getCatActive, DEFAULT_CAT_ACTIVE),
+    catPatiencePercent: clamp(
+      readOption(options.getCatPatiencePercent, DEFAULT_CAT_PATIENCE_PERCENT),
+      0,
+      100,
     ),
     facesFollowPointer: lookMode === LOOK_MODE_CURSOR,
   };
@@ -210,6 +1338,8 @@ function createBall(colorOption) {
 
   return {
     colorId: colorOption.id,
+    type: 'ball',
+    baseRadius: DEFAULT_BALL_RADIUS,
     root,
     lookGroup,
     focusFrontLight,
@@ -218,6 +1348,126 @@ function createBall(colorOption) {
     focusVisualScale: 1,
     sphereMaterial,
     state: { x: 0, y: 0, vx: 0, vy: 0, radius: DEFAULT_BALL_RADIUS },
+  };
+}
+
+function createCatPlaceholder(material) {
+  const placeholder = new THREE.Group();
+
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.55, 24, 16), material);
+  body.scale.set(1.35, 0.48, 0.42);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 20, 12), material);
+  head.position.set(0, 0.18, 0.52);
+
+  const earGeometry = new THREE.ConeGeometry(0.09, 0.18, 3);
+  const leftEar = new THREE.Mesh(earGeometry, material);
+  leftEar.position.set(-0.14, 0.4, 0.52);
+  leftEar.rotation.z = 0.2;
+  const rightEar = new THREE.Mesh(earGeometry, material);
+  rightEar.position.set(0.14, 0.4, 0.52);
+  rightEar.rotation.z = -0.2;
+
+  placeholder.add(body, head, leftEar, rightEar);
+  return placeholder;
+}
+
+function normalizeCatModel(object) {
+  const catModel = new THREE.Group();
+  // This OBJ is Z-up. Rotate it into Three.js's Y-up world before measuring.
+  catModel.rotation.x = -Math.PI / 2;
+  catModel.add(object);
+
+  catModel.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(catModel);
+  const size = box.getSize(new THREE.Vector3());
+  const maxSize = Math.max(size.x, size.y, size.z) || 1;
+  catModel.scale.setScalar(CAT_MODEL_TARGET_SIZE / maxSize);
+
+  catModel.updateMatrixWorld(true);
+  const scaledBox = new THREE.Box3().setFromObject(catModel);
+  const center = scaledBox.getCenter(new THREE.Vector3());
+  catModel.position.sub(center);
+
+  return catModel;
+}
+
+async function loadCatModel(modelAnchor, placeholder, shouldSkipAttach) {
+  const materials = await new MTLLoader()
+    .setPath(CAT_MODEL_BASE_URL)
+    .loadAsync(CAT_MATERIAL_FILE);
+  materials.preload();
+
+  const object = await new OBJLoader()
+    .setMaterials(materials)
+    .setPath(CAT_MODEL_BASE_URL)
+    .loadAsync(CAT_MODEL_FILE);
+
+  if (shouldSkipAttach()) {
+    return;
+  }
+
+  placeholder.visible = false;
+  modelAnchor.add(normalizeCatModel(object));
+}
+
+function createCatObject(shouldSkipAttach) {
+  const root = new THREE.Group();
+  const lookGroup = new THREE.Group();
+  const modelAnchor = new THREE.Group();
+  const focusFrontLight = new THREE.PointLight(
+    0xfff1c7,
+    CAT_BASE_FRONT_LIGHT_INTENSITY,
+    DEFAULT_CAT_RADIUS * 5.5,
+    1.7,
+  );
+  focusFrontLight.position.set(0, 0, DEFAULT_CAT_RADIUS * 3.2);
+  root.add(lookGroup);
+  root.add(focusFrontLight);
+  lookGroup.add(modelAnchor);
+
+  const placeholderMaterial = new THREE.MeshStandardMaterial({
+    color: 0xb88a5a,
+    emissive: 0xb88a5a,
+    emissiveIntensity: CAT_BASE_MATERIAL_EMISSIVE_INTENSITY,
+    roughness: 0.65,
+  });
+  const placeholder = createCatPlaceholder(placeholderMaterial);
+  modelAnchor.add(placeholder);
+
+  loadCatModel(modelAnchor, placeholder, shouldSkipAttach).catch((error) => {
+    console.warn('Could not load cat model asset', error);
+  });
+
+  return {
+    colorId: CAT_OBJECT_ID,
+    type: CAT_OBJECT_ID,
+    baseRadius: DEFAULT_CAT_RADIUS,
+    root,
+    lookGroup,
+    modelAnchor,
+    focusFrontLight,
+    focusFrontLightIntensity: CAT_BASE_FRONT_LIGHT_INTENSITY,
+    focusMaterialEmissiveIntensity: CAT_BASE_MATERIAL_EMISSIVE_INTENSITY,
+    baseFocusFrontLightIntensity: CAT_BASE_FRONT_LIGHT_INTENSITY,
+    baseFocusMaterialEmissiveIntensity: CAT_BASE_MATERIAL_EMISSIVE_INTENSITY,
+    focusVisualScale: 1,
+    sphereMaterial: placeholderMaterial,
+    idlePhase: randomBetween(0, Math.PI * 2),
+    smoothedTargetYaw: 0,
+    state: {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      radius: DEFAULT_CAT_RADIUS,
+      catBehavior: CAT_BEHAVIOR_WATCHING,
+      cornerAwayFrames: 0,
+      agitationFrames: 0,
+      agitationWindow: [],
+      escapeTarget: null,
+      lookTargetState: null,
+    },
   };
 }
 
@@ -249,19 +1499,25 @@ export function createBouncingBallScene(canvas, options = {}) {
 
   const ballsRoot = new THREE.Group();
   scene.add(ballsRoot);
+  let destroyed = false;
 
   const balls = BALL_COLOR_OPTIONS.map((colorOption) => {
     const ball = createBall(colorOption);
     ballsRoot.add(ball.root);
     return ball;
   });
+  const catObject = createCatObject(() => destroyed);
+  ballsRoot.add(catObject.root);
+  const sceneObjects = [...balls, catObject];
 
   const pointer = { x: 0, y: 0 };
   // Faces start (and return) at their forward pose until the cursor engages.
   let pointerActive = false;
   let bounds = { width: 0, height: 0, speedFactor: 1 };
   let animationFrame = 0;
-  let destroyed = false;
+  const clock = new THREE.Clock();
+  let wasCatActive = false;
+  let catRunAwayNotified = false;
 
   // Reused each frame to avoid per-frame allocations.
   const targetQuaternion = new THREE.Quaternion();
@@ -270,17 +1526,36 @@ export function createBouncingBallScene(canvas, options = {}) {
   const up = new THREE.Vector3();
   const basis = new THREE.Matrix4();
 
-  function seedBallPositions() {
-    const { ballRadius } = resolveSceneSettings(options);
-    const halfWidth = Math.max(0, bounds.width / 2 - ballRadius);
-    const halfHeight = Math.max(0, bounds.height / 2 - ballRadius);
-    balls.forEach((ball) => {
-      ball.state.x = randomBetween(-halfWidth, halfWidth);
-      ball.state.y = randomBetween(-halfHeight, halfHeight);
-      const angle = randomBetween(0, Math.PI * 2);
-      const speed = randomBetween(0.025, 0.055);
-      ball.state.vx = Math.cos(angle) * speed;
-      ball.state.vy = Math.sin(angle) * speed;
+  function seedSceneObject(object, settings) {
+    applyObjectSize(object, settings.ballRadius);
+    const halfWidth = Math.max(0, bounds.width / 2 - object.state.radius);
+    const halfHeight = Math.max(0, bounds.height / 2 - object.state.radius);
+    const angle = randomBetween(0, Math.PI * 2);
+    const speed = randomBetween(0.025, 0.055);
+    object.state.x = randomBetween(-halfWidth, halfWidth);
+    object.state.y = randomBetween(-halfHeight, halfHeight);
+    object.state.vx = Math.cos(angle) * speed;
+    object.state.vy = Math.sin(angle) * speed;
+  }
+
+  function resetCatAfterRosterActivation(settings) {
+    seedSceneObject(catObject, settings);
+    catObject.state.vx = 0;
+    catObject.state.vy = 0;
+    catObject.state.catBehavior = CAT_BEHAVIOR_WATCHING;
+    catObject.state.cornerAwayFrames = 0;
+    catObject.state.agitationFrames = 0;
+    catObject.state.agitationWindow = [];
+    catObject.state.escapeTarget = null;
+    catObject.state.lookTargetState = null;
+    catObject.smoothedTargetYaw = 0;
+    catRunAwayNotified = false;
+  }
+
+  function seedObjectPositions() {
+    const settings = resolveSceneSettings(options);
+    sceneObjects.forEach((object) => {
+      seedSceneObject(object, settings);
     });
   }
 
@@ -328,10 +1603,10 @@ export function createBouncingBallScene(canvas, options = {}) {
 
   function handleClick(event) {
     const settings = resolveSceneSettings(options);
-    const activeBalls = getActiveBalls(balls, settings);
+    const activeObjects = getActiveSceneObjects(balls, catObject, settings);
     const normalizedPointer = updatePointerFromEvent(event);
     const point = getPointerWorldPosition(normalizedPointer, bounds);
-    const colorId = getHitBallColorId(point, activeBalls);
+    const colorId = getHitBallColorId(point, activeObjects);
 
     if (colorId) {
       options.onLookTargetChange?.({ lookMode: LOOK_MODE_FOCUS, focusColorId: colorId });
@@ -341,19 +1616,16 @@ export function createBouncingBallScene(canvas, options = {}) {
     options.onLookTargetChange?.({ lookMode: LOOK_MODE_CURSOR });
   }
 
-  function applyBallSize(ball, ballRadius) {
-    ball.state.radius = ballRadius;
-    ball.lookGroup.scale.setScalar(ballRadius / DEFAULT_BALL_RADIUS);
-    ball.focusFrontLight.position.z = ballRadius * 3.2;
-    ball.focusFrontLight.distance = ballRadius * 5.5;
+  function applyObjectSize(object, ballRadius) {
+    const scale = ballRadius / DEFAULT_BALL_RADIUS;
+    object.state.radius = object.baseRadius * scale;
+    object.lookGroup.scale.setScalar(scale);
+    object.focusFrontLight.position.z = object.state.radius * 3.2;
+    object.focusFrontLight.distance = object.state.radius * 5.5;
   }
 
-  function getFocusBall(settings, activeBalls) {
-    return activeBalls.find((ball) => ball.colorId === settings.focusColorId) ?? null;
-  }
-
-  function applyFocusEffect(ball, settings, focusBall) {
-    const target = resolveFocusEffectState(ball, focusBall, settings);
+  function applyFocusEffect(ball, settings, focusTarget) {
+    const target = resolveFocusEffectState(ball, focusTarget, settings);
     ball.focusFrontLightIntensity += (
       target.frontLightIntensity - ball.focusFrontLightIntensity
     ) * FOCUS_EFFECT_SMOOTHING;
@@ -367,7 +1639,7 @@ export function createBouncingBallScene(canvas, options = {}) {
     ball.root.scale.setScalar(ball.focusVisualScale);
   }
 
-  function orientFace(ball, settings, focusBall) {
+  function orientFace(ball, settings, focusTarget) {
     if (settings.lookMode === LOOK_MODE_CURSOR && pointerActive) {
       const look = getLookDirection(pointer, ball.state, bounds, {
         maxLean: settings.maxLean,
@@ -375,8 +1647,8 @@ export function createBouncingBallScene(canvas, options = {}) {
         innerRange: settings.innerLookRange,
       });
       lookDir.set(look.x, look.y, look.z);
-    } else if (settings.lookMode === LOOK_MODE_FOCUS && focusBall && ball !== focusBall) {
-      const look = getLookDirectionToPoint(focusBall.state, ball.state, {
+    } else if (settings.lookMode === LOOK_MODE_FOCUS && focusTarget && ball !== focusTarget) {
+      const look = getLookDirectionToPoint(focusTarget.state, ball.state, {
         maxLean: settings.maxLean,
         range: settings.lookRange,
         innerRange: settings.innerLookRange,
@@ -396,49 +1668,101 @@ export function createBouncingBallScene(canvas, options = {}) {
     ball.lookGroup.quaternion.slerp(targetQuaternion, settings.tiltSmoothing);
   }
 
+  function animateSceneObject(object, elapsedSeconds, settings) {
+    if (object.type !== CAT_OBJECT_ID) {
+      return;
+    }
+
+    const targetYaw = resolveCatTargetYaw(object, settings, {
+      bounds,
+    });
+    object.smoothedTargetYaw = resolveCatSmoothedYaw(object.smoothedTargetYaw, targetYaw);
+    const transform = resolveCatIdleTransform(
+      object,
+      elapsedSeconds,
+      settings,
+      object.smoothedTargetYaw,
+    );
+    object.modelAnchor.position.y = transform.bobY;
+    object.modelAnchor.rotation.y = transform.rotationY;
+    object.modelAnchor.rotation.z = transform.rotationZ;
+  }
+
   function render() {
     const settings = resolveSceneSettings(options);
     const activeBalls = getActiveBalls(balls, settings);
+    const catActive = settings.catActive !== false;
+    if (catActive && !wasCatActive) {
+      resetCatAfterRosterActivation(settings);
+    }
+    wasCatActive = catActive;
+
+    const activeObjects = getActiveSceneObjects(balls, catObject, settings);
+    const elapsedSeconds = clock.getElapsedTime();
     bounds.speedFactor = settings.speedFactor;
 
-    balls.forEach((ball) => {
-      ball.root.visible = activeBalls.includes(ball);
-      applyBallSize(ball, settings.ballRadius);
+    sceneObjects.forEach((object) => {
+      object.root.visible = activeObjects.includes(object);
+      applyObjectSize(object, settings.ballRadius);
     });
+    if (catActive) {
+      catObject.state = resolveCatAvoidanceState(catObject, activeBalls, {
+        bounds,
+        catPatiencePercent: settings.catPatiencePercent,
+      });
+    }
 
     // 1) Integrate motion and bounce off the viewport walls.
-    activeBalls.forEach((ball) => {
-      ball.state = stepBall(ball.state, {
+    activeObjects.forEach((object) => {
+      if (object.type === CAT_OBJECT_ID && object.state.catBehavior === CAT_BEHAVIOR_LEAVING) {
+        object.state = stepCatRunAwayState(object.state, {
+          speedFactor: settings.speedFactor,
+        });
+        return;
+      }
+
+      object.state = stepBall(object.state, {
         width: bounds.width,
         height: bounds.height,
-        radius: ball.state.radius,
+        radius: object.state.radius,
         speedFactor: settings.speedFactor,
       });
     });
 
-    // 2) Bounce the balls off each other.
-    for (let i = 0; i < activeBalls.length; i += 1) {
-      for (let j = i + 1; j < activeBalls.length; j += 1) {
-        resolveCircleCollision(activeBalls[i].state, activeBalls[j].state);
-      }
-    }
+    // 2) Bounce balls off each other. The cat is kinematic relative to balls so
+    // it can flee without stealing or injecting ball velocity.
+    resolveSceneObjectCollisions(activeObjects);
 
     // 3) Keep everything inside the walls (a collision can nudge a ball out),
     //    then place each ball before resolving focus targets.
     const halfWidth = bounds.width / 2;
     const halfHeight = bounds.height / 2;
-    activeBalls.forEach((ball) => {
-      const { radius } = ball.state;
-      ball.state.x = clamp(ball.state.x, -halfWidth + radius, halfWidth - radius);
-      ball.state.y = clamp(ball.state.y, -halfHeight + radius, halfHeight - radius);
-      ball.root.position.set(ball.state.x, ball.state.y, 0);
+    activeObjects.forEach((object) => {
+      const { radius } = object.state;
+      if (object.type === CAT_OBJECT_ID && object.state.catBehavior === CAT_BEHAVIOR_LEAVING) {
+        object.root.position.set(object.state.x, object.state.y, 0);
+        if (!catRunAwayNotified && isCatOutsideScene(object.state, bounds)) {
+          catRunAwayNotified = true;
+          options.onCatRunAway?.();
+        }
+        return;
+      }
+
+      object.state.x = clamp(object.state.x, -halfWidth + radius, halfWidth - radius);
+      object.state.y = clamp(object.state.y, -halfHeight + radius, halfHeight - radius);
+      object.root.position.set(object.state.x, object.state.y, 0);
     });
 
-    const focusBall = settings.lookMode === LOOK_MODE_FOCUS ? getFocusBall(settings, activeBalls) : null;
-    balls.forEach((ball) => {
-      applyFocusEffect(ball, settings, focusBall);
-      if (ball.root.visible) {
-        orientFace(ball, settings, focusBall);
+    const focusTarget = settings.lookMode === LOOK_MODE_FOCUS
+      ? getFocusTarget(activeObjects, settings)
+      : null;
+    sceneObjects.forEach((object) => {
+      applyFocusEffect(object, settings, focusTarget);
+      if (object.root.visible) {
+        if (shouldOrientObject(object)) {
+          orientFace(object, settings, focusTarget);
+        }
+        animateSceneObject(object, elapsedSeconds, settings);
       }
     });
 
@@ -453,7 +1777,7 @@ export function createBouncingBallScene(canvas, options = {}) {
   canvas.addEventListener('pointerleave', handlePointerLeave);
   canvas.addEventListener('click', handleClick);
   resize();
-  seedBallPositions();
+  seedObjectPositions();
   render();
 
   return {
