@@ -2042,6 +2042,7 @@ export function createBouncingBallScene(canvas, options = {}) {
   }
 
   window.addEventListener('resize', resize);
+  window.visualViewport?.addEventListener('resize', resize);
   canvas.addEventListener('pointermove', updatePointer);
   canvas.addEventListener('pointerleave', handlePointerLeave);
   canvas.addEventListener('click', handleClick);
@@ -2054,6 +2055,7 @@ export function createBouncingBallScene(canvas, options = {}) {
       destroyed = true;
       cancelAnimationFrame(animationFrame);
       window.removeEventListener('resize', resize);
+      window.visualViewport?.removeEventListener('resize', resize);
       canvas.removeEventListener('pointermove', updatePointer);
       canvas.removeEventListener('pointerleave', handlePointerLeave);
       canvas.removeEventListener('click', handleClick);
