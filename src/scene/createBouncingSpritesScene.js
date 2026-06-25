@@ -205,6 +205,7 @@ export function createBouncingSpritesScene(canvas, options = {}) {
   }
 
   window.addEventListener('resize', resize);
+  window.visualViewport?.addEventListener('resize', resize);
   canvas.addEventListener('click', handleClick);
   resize();
   sprites.forEach(randomizeSprite);
@@ -215,6 +216,7 @@ export function createBouncingSpritesScene(canvas, options = {}) {
       destroyed = true;
       cancelAnimationFrame(animationFrame);
       window.removeEventListener('resize', resize);
+      window.visualViewport?.removeEventListener('resize', resize);
       canvas.removeEventListener('click', handleClick);
     },
   };

@@ -34,7 +34,8 @@ describe('3D roster', () => {
     expect(markup).toContain(`const rosterItems = computed(() => [
   CAT_ROSTER_ITEM,
   ...BALL_COLOR_OPTIONS.map((color) => ({`);
-    expect(styles).toContain('max-width: min(512px, calc(100vw - 82px));');
+    expect(styles).toContain('--scene-safe-left: env(safe-area-inset-left, 0px);');
+    expect(styles).toContain('max-width: min(512px, calc(100vw - 82px - var(--scene-safe-left) - var(--scene-safe-right)));');
   });
 
   test('deactivates the cat roster item when the scene reports a cat run-away', () => {
@@ -85,5 +86,24 @@ describe('3D roster', () => {
     expect(markup).toContain('@click="toggleRosterOpen"');
     expect(markup).toContain('rosterAutoCloseTimeout = window.setTimeout(() => {');
     expect(markup).toContain('rosterOpen.value = false;');
+  });
+});
+
+describe('mobile viewport layout', () => {
+  test('uses dynamic viewport height and safe-area offsets for mobile Safari chrome', () => {
+    const appStyles = readFileSync(resolve(viewsDir, '../App.vue'), 'utf8');
+    const sceneStyles = readFileSync(resolve(viewsDir, '../assets/scene.css'), 'utf8');
+    const indexMarkup = readFileSync(resolve(viewsDir, '../../index.html'), 'utf8');
+    const ballScene = readFileSync(resolve(viewsDir, '../scene/createBouncingBallScene.js'), 'utf8');
+    const spriteScene = readFileSync(resolve(viewsDir, '../scene/createBouncingSpritesScene.js'), 'utf8');
+
+    expect(indexMarkup).toContain('viewport-fit=cover');
+    expect(appStyles).toContain('height: 100dvh;');
+    expect(sceneStyles).toContain('--scene-safe-bottom: env(safe-area-inset-bottom, 0px);');
+    expect(sceneStyles).toContain('bottom: calc(16px + var(--scene-safe-bottom));');
+    expect(sceneStyles).toContain('right: calc(16px + var(--scene-safe-right));');
+    expect(sceneStyles).toContain('max-height: calc(100dvh - 32px - var(--scene-safe-top) - var(--scene-safe-bottom));');
+    expect(ballScene).toContain("window.visualViewport?.addEventListener('resize', resize);");
+    expect(spriteScene).toContain("window.visualViewport?.addEventListener('resize', resize);");
   });
 });
