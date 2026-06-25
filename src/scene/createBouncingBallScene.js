@@ -36,8 +36,11 @@ const FOCUS_EFFECT_SMOOTHING = 0.12;
 const FOCUS_FRONT_LIGHT_INTENSITY = 0.58;
 const FOCUS_MATERIAL_EMISSIVE_INTENSITY = 0.18;
 const FOCUS_VISUAL_SCALE = 1.15;
-const CAT_BASE_FRONT_LIGHT_INTENSITY = FOCUS_FRONT_LIGHT_INTENSITY;
+const CAT_BASE_FRONT_LIGHT_INTENSITY = 1;
 const CAT_BASE_MATERIAL_EMISSIVE_INTENSITY = FOCUS_MATERIAL_EMISSIVE_INTENSITY;
+// Self-illumination baked onto the loaded cat model so it stays readable on the
+// black background instead of sinking into shadow when it leaves the key light.
+const CAT_MODEL_EMISSIVE_INTENSITY = 0.6;
 const LOOK_MODE_NONE = 'none';
 const MAX_LOOK_RANGE = 20;
 const MAX_SPEED_FACTOR = 4;
@@ -1543,6 +1546,32 @@ function normalizeCatModel(object) {
   return catModel;
 }
 
+function brightenCatModel(object) {
+  object.traverse((child) => {
+    if (!child.isMesh || !child.material) {
+      return;
+    }
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => {
+      if (!material.emissive) {
+        return;
+      }
+
+      // Emit the model's own diffuse colour/texture so the cat glows enough to
+      // stay visible on black even when it drifts away from the key light.
+      if (material.color) {
+        material.emissive.copy(material.color);
+      } else {
+        material.emissive.setHex(0xffffff);
+      }
+      material.emissiveMap = material.map ?? null;
+      material.emissiveIntensity = CAT_MODEL_EMISSIVE_INTENSITY;
+      material.needsUpdate = true;
+    });
+  });
+}
+
 async function loadCatModel(modelAnchor, placeholder, shouldSkipAttach) {
   const materials = await new MTLLoader()
     .setPath(CAT_MODEL_BASE_URL)
@@ -1558,6 +1587,7 @@ async function loadCatModel(modelAnchor, placeholder, shouldSkipAttach) {
     return;
   }
 
+  brightenCatModel(object);
   placeholder.visible = false;
   modelAnchor.add(normalizeCatModel(object));
 }
