@@ -10,7 +10,7 @@
       }"
       aria-live="polite"
     >
-      I'm outta hear!
+      I'm outta here!
     </div>
     <div class="scene-settings" :class="{ 'is-open': settingsOpen }">
       <aside

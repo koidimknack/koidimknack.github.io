@@ -72,7 +72,7 @@ describe('3D roster', () => {
 
     expect(markup).toContain('class="scene-cat-speech-bubble"');
     expect(markup).toContain('onCatSpeechBubbleChange: setCatSpeechBubble');
-    expect(markup).toContain("I'm outta hear!");
+    expect(markup).toContain("I'm outta here!");
     expect(styles).toContain('.scene-cat-speech-bubble');
   });
 
