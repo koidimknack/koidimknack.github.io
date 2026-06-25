@@ -46,9 +46,9 @@ describe('resolveSceneSettings', () => {
   test('uses stable defaults for the 3D scene controls', () => {
     const settings = resolveSceneSettings();
 
-    expect(settings.speedFactor).toBe(1.5);
+    expect(settings.speedFactor).toBe(1);
     expect(settings.ballRadius).toBe(0.5);
-    expect(settings.lookRange).toBe(12.5);
+    expect(settings.lookRange).toBe(13.5);
     expect(settings.innerLookRange).toBe(0.5);
     expect(settings.maxLean).toBeCloseTo(degreesToRadians(55), 12);
     expect(settings.tiltSmoothing).toBe(0.18);
@@ -57,7 +57,7 @@ describe('resolveSceneSettings', () => {
     expect(settings.focusEffectsEnabled).toBe(true);
     expect(settings.catMotionEnabled).toBe(true);
     expect(settings.catActive).toBe(true);
-    expect(settings.catPatiencePercent).toBe(50);
+    expect(settings.catPatiencePercent).toBe(20);
     expect(settings.activeColorIds).toEqual(BALL_COLOR_OPTIONS.map((color) => color.id));
     expect(settings.facesFollowPointer).toBe(true);
   });

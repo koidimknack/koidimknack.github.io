@@ -22,7 +22,7 @@ export const CAT_BEHAVIOR_ANNOUNCING = 'announcing';
 export const CAT_BEHAVIOR_LEAVING = 'leaving';
 
 const VIEW_HEIGHT = 8; // world units shown vertically (orthographic frustum)
-const DEFAULT_SPEED_FACTOR = 1.;
+const DEFAULT_SPEED_FACTOR = 1;
 const DEFAULT_BALL_RADIUS = 0.5;
 const DEFAULT_CAT_RADIUS = 0.75;
 const DEFAULT_TILT_SMOOTHING = 0.18;
