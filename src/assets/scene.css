@@ -11,6 +11,37 @@
   background: #000;
 }
 
+.scene-cat-speech-bubble {
+  position: absolute;
+  z-index: 875;
+  max-width: min(220px, calc(100vw - 32px));
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #0d0d0d;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+  transform: translate(-50%, -118%);
+}
+
+.scene-cat-speech-bubble::after {
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-right: 1px solid rgba(255, 255, 255, 0.82);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.94);
+  content: '';
+  transform: translateX(-50%) rotate(45deg);
+}
+
 .scene-controls {
   position: absolute;
   right: 0;
