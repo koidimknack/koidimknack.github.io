@@ -17,3 +17,38 @@ describe('settings drawer chevrons', () => {
     expect(markup).not.toContain('scene-settings-triangle');
   });
 });
+
+describe('3D roster', () => {
+  test('includes a cat roster item wired to scene cat visibility', () => {
+    const markup = readView('ThreeDView.vue');
+
+    expect(markup).toContain('class="scene-roster-cat"');
+    expect(markup).toContain('src="/images/british-shorthair-cat.png"');
+    expect(markup).toContain('getCatActive: () => isRosterItemActive(CAT_OBJECT_ID)');
+  });
+
+  test('lists the cat before the ball roster items and sizes the drawer for all items', () => {
+    const markup = readView('ThreeDView.vue');
+    const styles = readFileSync(resolve(viewsDir, '../assets/scene.css'), 'utf8');
+
+    expect(markup).toContain(`const rosterItems = computed(() => [
+  CAT_ROSTER_ITEM,
+  ...BALL_COLOR_OPTIONS.map((color) => ({`);
+    expect(styles).toContain('max-width: min(512px, calc(100vw - 82px));');
+  });
+
+  test('deactivates the cat roster item when the scene reports a cat run-away', () => {
+    const markup = readView('ThreeDView.vue');
+
+    expect(markup).toContain('onCatRunAway: () => deactivateRosterItem(CAT_OBJECT_ID)');
+    expect(markup).toContain('activeRosterIds.value.filter((activeRosterId) => activeRosterId !== rosterId)');
+  });
+
+  test('wires a cat patience slider into the 3D scene settings', () => {
+    const markup = readView('ThreeDView.vue');
+
+    expect(markup).toContain('for="cat-patience-3d"');
+    expect(markup).toContain('v-model.number="catPatiencePercent"');
+    expect(markup).toContain('getCatPatiencePercent: () => catPatiencePercent.value');
+  });
+});
