@@ -58,6 +58,14 @@ describe('3D roster', () => {
     expect(markup).toContain('const DEFAULT_FOCUS_COLOR_ID = CAT_OBJECT_ID;');
   });
 
+  test('keeps the 3D view defaults aligned with scene defaults', () => {
+    const markup = readView('ThreeDView.vue');
+
+    expect(markup).toContain('const DEFAULT_SPEED_FACTOR = 1;');
+    expect(markup).toContain('const DEFAULT_FOLLOW_RADIUS = 13.5;');
+    expect(markup).toContain('const DEFAULT_CAT_PATIENCE_PERCENT = 20;');
+  });
+
   test('renders the cat exit speech bubble from scene callbacks', () => {
     const markup = readView('ThreeDView.vue');
     const styles = readFileSync(resolve(viewsDir, '../assets/scene.css'), 'utf8');
