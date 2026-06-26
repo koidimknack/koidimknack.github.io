@@ -117,6 +117,9 @@ const CAT_UFO_LEAVE_FRAMES = CAT_UFO_ENTER_FRAMES;
 const CAT_UFO_SCREEN_MARGIN = 1.2;
 const CAT_UFO_HOVER_OFFSET = 1.65;
 const CAT_UFO_Z_OFFSET = 2.2;
+const CAT_UFO_LIFT_CLEARANCE_FACTOR = 0.12;
+const TRACTOR_BEAM_RADIUS = 0.78;
+const TRACTOR_BEAM_HEIGHT = 2.25;
 
 export const BALL_COLOR_OPTIONS = [
   { id: 'yellow', label: 'Yellow', value: 0xffdf2e, css: '#ffdf2e' },
@@ -826,6 +829,18 @@ function isCatUfoSequenceActive(state) {
     || state?.catBehavior === CAT_BEHAVIOR_UFO_LEAVING;
 }
 
+function resolveCatUfoLiftDistance(state, hover) {
+  const radius = state.radius ?? DEFAULT_CAT_RADIUS;
+  const catY = state.y ?? 0;
+  const desiredLift = radius * 1.75;
+  const maxLiftBeforeUfo = Math.max(
+    0,
+    hover.y - catY - radius * CAT_UFO_LIFT_CLEARANCE_FACTOR,
+  );
+
+  return Math.min(desiredLift, maxLiftBeforeUfo);
+}
+
 export function resolveCatUfoVisualState(state) {
   const fallbackHover = {
     x: state.x ?? 0,
@@ -858,11 +873,12 @@ export function resolveCatUfoVisualState(state) {
 
   if (state.catBehavior === CAT_BEHAVIOR_UFO_BEAMING) {
     const progress = easeInOut(getUfoPhaseProgress(state, CAT_UFO_BEAM_FRAMES));
+    const catLiftDistance = resolveCatUfoLiftDistance(state, hover);
     return {
       ...base,
       ufoVisible: true,
       beamVisible: true,
-      catLiftY: (state.radius ?? DEFAULT_CAT_RADIUS) * 1.75 * progress,
+      catLiftY: catLiftDistance * progress,
       catScale: lerp(1, 0.12, progress),
       catOpacity: lerp(1, 0, progress),
       beamOpacity: lerp(0.18, 0.34, progress),
@@ -1874,15 +1890,9 @@ function createCatUfo(shouldSkipAttach) {
   const fallbackModel = new THREE.Group();
   group.visible = false;
 
-  const beamMaterial = new THREE.MeshBasicMaterial({
-    color: 0xa8f5ff,
-    transparent: true,
-    opacity: 0.2,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
+  const beamMaterial = createSoftTractorBeamMaterial();
   const beam = new THREE.Mesh(
-    new THREE.ConeGeometry(0.78, 2.25, 32, 1, true),
+    new THREE.PlaneGeometry(TRACTOR_BEAM_RADIUS * 2, TRACTOR_BEAM_HEIGHT),
     beamMaterial,
   );
   beam.visible = false;
@@ -1920,6 +1930,62 @@ function createCatUfo(shouldSkipAttach) {
   });
 
   return { group, beam, beamMaterial };
+}
+
+export function createSoftTractorBeamMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      color: { value: new THREE.Color(0xa8f5ff) },
+      opacity: { value: 0.2 },
+      radius: { value: TRACTOR_BEAM_RADIUS },
+      height: { value: TRACTOR_BEAM_HEIGHT },
+    },
+    vertexShader: `
+      varying vec3 vLocalPosition;
+
+      void main() {
+        vLocalPosition = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 color;
+      uniform float opacity;
+      uniform float radius;
+      uniform float height;
+      varying vec3 vLocalPosition;
+
+      void main() {
+        float yProgress = clamp((vLocalPosition.y + height * 0.5) / height, 0.0, 1.0);
+        float beamHalfWidth = mix(radius, radius * 0.14, yProgress);
+        float normalizedEdgeDistance = abs(vLocalPosition.x) / beamHalfWidth;
+        float edgeFade = 1.0 - smoothstep(0.42, 1.0, normalizedEdgeDistance);
+        float verticalFade = smoothstep(0.02, 0.16, yProgress)
+          * (1.0 - smoothstep(0.9, 1.0, yProgress));
+        float coreGlow = 1.0 - smoothstep(0.0, 0.62, normalizedEdgeDistance);
+        float centerGlow = 0.35 + coreGlow * 0.65;
+        float alpha = opacity * edgeFade * verticalFade * centerGlow;
+
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
+export function setTractorBeamOpacity(material, opacity) {
+  const resolvedOpacity = clamp(Number.isFinite(opacity) ? opacity : 0, 0, 1);
+  if (material?.uniforms?.opacity) {
+    material.uniforms.opacity.value = resolvedOpacity;
+    return;
+  }
+
+  if (material) {
+    material.opacity = resolvedOpacity;
+  }
 }
 
 function normalizeUfoModel(object) {
@@ -2434,9 +2500,12 @@ export function createBouncingBallScene(canvas, options = {}) {
         ? Math.sin(elapsedSeconds * 2.2) * 0.035
         : 0;
       object.ufoBeam.visible = ufoVisualState.beamVisible;
-      object.ufoBeamMaterial.opacity = ufoVisualState.beamVisible
-        ? ufoVisualState.beamOpacity + Math.sin(elapsedSeconds * 8) * 0.05
-        : 0;
+      setTractorBeamOpacity(
+        object.ufoBeamMaterial,
+        ufoVisualState.beamVisible
+          ? ufoVisualState.beamOpacity + Math.sin(elapsedSeconds * 8) * 0.05
+          : 0,
+      );
       if (object.ufoFocusTarget) {
         object.ufoFocusTarget.state.x = ufoVisualState.ufoX;
         object.ufoFocusTarget.state.y = ufoVisualState.ufoY;
