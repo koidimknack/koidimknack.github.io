@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
 const catAssetDir = resolve(import.meta.dirname, '../../public/models/cat');
+const ufoAssetDir = resolve(import.meta.dirname, '../../public/models/ufo');
 const publicImagesDir = resolve(import.meta.dirname, '../../public/images');
 
 describe('cat model assets', () => {
@@ -24,5 +25,18 @@ describe('cat model assets', () => {
 
   test('ships the cat roster icon', () => {
     expect(existsSync(resolve(publicImagesDir, 'british-shorthair-cat.png'))).toBe(true);
+  });
+
+  test('ships the UFO OBJ, material, and texture files together', () => {
+    const objPath = resolve(ufoAssetDir, 'UFO2.obj');
+    const materialPath = resolve(ufoAssetDir, 'UFO2.mtl');
+    const texturePath = resolve(ufoAssetDir, '931377098.jpg');
+
+    expect(existsSync(objPath)).toBe(true);
+    expect(existsSync(materialPath)).toBe(true);
+    expect(existsSync(texturePath)).toBe(true);
+
+    expect(readFileSync(objPath, 'utf8')).toContain('mtllib UFO2.mtl');
+    expect(readFileSync(materialPath, 'utf8')).toContain('map_Kd 931377098.jpg');
   });
 });

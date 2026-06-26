@@ -53,6 +53,15 @@ describe('3D roster', () => {
     expect(markup).toContain('getCatPatiencePercent: () => catPatiencePercent.value');
   });
 
+  test('wires an always-UFO cat exit toggle into the 3D scene settings', () => {
+    const markup = readView('ThreeDView.vue');
+
+    expect(markup).toContain('for="cat-force-ufo-exit-3d"');
+    expect(markup).toContain('v-model="catForceUfoExit"');
+    expect(markup).toContain('getCatForceUfoExit: () => catForceUfoExit.value');
+    expect(markup).toContain('catForceUfoExit.value = DEFAULT_CAT_FORCE_UFO_EXIT;');
+  });
+
   test('defaults the 3D focus target to the cat', () => {
     const markup = readView('ThreeDView.vue');
 
