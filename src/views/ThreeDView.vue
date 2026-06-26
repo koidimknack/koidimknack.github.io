@@ -115,6 +115,16 @@
           </div>
 
           <div class="scene-control-row">
+            <label for="cat-force-ufo-exit-3d">Always UFO exit</label>
+            <input
+              id="cat-force-ufo-exit-3d"
+              v-model="catForceUfoExit"
+              type="checkbox"
+            >
+            <span class="control-value">{{ catForceUfoExit ? 'On' : 'Off' }}</span>
+          </div>
+
+          <div class="scene-control-row">
             <label for="cat-patience-3d">Cat patience</label>
             <input
               id="cat-patience-3d"
@@ -271,6 +281,7 @@ const DEFAULT_TILT_SMOOTHING = 0.18;
 const DEFAULT_FOCUS_EFFECTS_ENABLED = true;
 const DEFAULT_CAT_MOTION_ENABLED = true;
 const DEFAULT_CAT_PATIENCE_PERCENT = 20;
+const DEFAULT_CAT_FORCE_UFO_EXIT = false;
 const DEFAULT_ACTIVE_BALL_COUNT = 4;
 const ROSTER_AUTO_CLOSE_DELAY_MS = 5000;
 const CAT_FOCUS_LABEL = 'Cat';
@@ -295,6 +306,7 @@ const tiltSmoothing = ref(DEFAULT_TILT_SMOOTHING);
 const focusEffectsEnabled = ref(DEFAULT_FOCUS_EFFECTS_ENABLED);
 const catMotionEnabled = ref(DEFAULT_CAT_MOTION_ENABLED);
 const catPatiencePercent = ref(DEFAULT_CAT_PATIENCE_PERCENT);
+const catForceUfoExit = ref(DEFAULT_CAT_FORCE_UFO_EXIT);
 const catSpeechBubble = ref({ visible: false, x: 0, y: 0 });
 const activeRosterIds = ref([
   CAT_OBJECT_ID,
@@ -461,6 +473,7 @@ async function resetSettings() {
   focusEffectsEnabled.value = DEFAULT_FOCUS_EFFECTS_ENABLED;
   catMotionEnabled.value = DEFAULT_CAT_MOTION_ENABLED;
   catPatiencePercent.value = DEFAULT_CAT_PATIENCE_PERCENT;
+  catForceUfoExit.value = DEFAULT_CAT_FORCE_UFO_EXIT;
   ballRadius.value = DEFAULT_BALL_RADIUS;
   await nextTick();
   followRadius.value = DEFAULT_FOLLOW_RADIUS;
@@ -480,6 +493,7 @@ onMounted(() => {
     getFocusEffectsEnabled: () => focusEffectsEnabled.value,
     getCatMotionEnabled: () => catMotionEnabled.value,
     getCatPatiencePercent: () => catPatiencePercent.value,
+    getCatForceUfoExit: () => catForceUfoExit.value,
     getCatActive: () => isRosterItemActive(CAT_OBJECT_ID),
     getActiveColorIds: () => activeColorIds.value,
     onLookTargetChange: setLookTarget,

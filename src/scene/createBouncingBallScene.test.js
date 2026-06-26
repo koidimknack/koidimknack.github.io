@@ -6,6 +6,9 @@ import {
   CAT_BEHAVIOR_LEAVING,
   CAT_BEHAVIOR_RETREATING,
   CAT_BEHAVIOR_TURNING_INWARD,
+  CAT_BEHAVIOR_UFO_BEAMING,
+  CAT_BEHAVIOR_UFO_ENTERING,
+  CAT_BEHAVIOR_UFO_LEAVING,
   CAT_BEHAVIOR_WATCHING,
   CAT_OBJECT_ID,
   LOOK_MODE_CURSOR,
@@ -21,6 +24,7 @@ import {
   resolveCatMaxSpeed,
   resolveCatSmoothedYaw,
   resolveCatTargetYaw,
+  resolveCatUfoVisualState,
   resolvePredictedEscapeTarget,
   resolveFocusEffectState,
   resolveSafeCornerRetreatTarget,
@@ -58,6 +62,7 @@ describe('resolveSceneSettings', () => {
     expect(settings.catMotionEnabled).toBe(true);
     expect(settings.catActive).toBe(true);
     expect(settings.catPatiencePercent).toBe(20);
+    expect(settings.catForceUfoExit).toBe(false);
     expect(settings.activeColorIds).toEqual(BALL_COLOR_OPTIONS.map((color) => color.id));
     expect(settings.facesFollowPointer).toBe(true);
   });
@@ -75,6 +80,7 @@ describe('resolveSceneSettings', () => {
       getCatMotionEnabled: () => false,
       getCatActive: () => false,
       getCatPatiencePercent: () => -20,
+      getCatForceUfoExit: () => true,
       getActiveColorIds: () => ['blue', 'green', 'missing', 'blue'],
     });
 
@@ -90,6 +96,7 @@ describe('resolveSceneSettings', () => {
     expect(settings.catMotionEnabled).toBe(false);
     expect(settings.catActive).toBe(false);
     expect(settings.catPatiencePercent).toBe(0);
+    expect(settings.catForceUfoExit).toBe(true);
     expect(settings.activeColorIds).toEqual(['blue', 'green']);
     expect(settings.facesFollowPointer).toBe(false);
   });
@@ -246,6 +253,24 @@ describe('resolveSceneFocusTarget', () => {
       catExitSequenceActive: true,
       catObject,
     })).toBe(catObject);
+  });
+
+  test('uses the UFO as the focus target while the cat is in the UFO sequence', () => {
+    const yellowBall = { colorId: 'yellow' };
+    const catObject = {
+      colorId: CAT_OBJECT_ID,
+      type: CAT_OBJECT_ID,
+      state: { catBehavior: CAT_BEHAVIOR_UFO_ENTERING },
+      ufoFocusTarget: { state: { x: 2, y: 1, radius: 0.75 } },
+    };
+
+    expect(resolveSceneFocusTarget([yellowBall, catObject], {
+      lookMode: LOOK_MODE_CURSOR,
+      focusColorId: 'yellow',
+    }, {
+      catExitSequenceActive: true,
+      catObject,
+    })).toBe(catObject.ufoFocusTarget);
   });
 });
 
@@ -572,6 +597,34 @@ describe('resolveCatAvoidanceState', () => {
     expect(isCatExitSequenceActive(state)).toBe(true);
   });
 
+  test('forces a UFO route even when a side exit is clear', () => {
+    const catObject = {
+      type: CAT_OBJECT_ID,
+      state: {
+        x: 3,
+        y: 0,
+        vx: 0.02,
+        vy: 0,
+        radius: 0.75,
+        catBehavior: CAT_BEHAVIOR_FLEEING,
+      },
+    };
+    const nearbyBalls = [
+      { colorId: 'blue', state: { x: 2.2, y: 0, vx: 0.08, vy: 0, radius: 0.5 } },
+    ];
+
+    const state = resolveCatAvoidanceState(catObject, nearbyBalls, {
+      bounds: { width: 8, height: 8 },
+      catPatiencePercent: 0,
+      forceUfoExit: true,
+    });
+
+    expect(state.catBehavior).toBe(CAT_BEHAVIOR_TURNING_INWARD);
+    expect(state.exitRouteType).toBe('ufo');
+    expect(state.ufoEntryPoint.x).toBeGreaterThan(state.ufoHoverPoint.x);
+    expect(state.ufoExitPoint.x).toBeLessThan(state.ufoHoverPoint.x);
+  });
+
   test('runs away when ball pressure exceeds the configured patience percent', () => {
     const catObject = {
       type: CAT_OBJECT_ID,
@@ -664,6 +717,69 @@ describe('resolveCatAvoidanceState', () => {
     expect(state.exitSpeed).toBeGreaterThan(0.04);
     expect(state.vx).toBe(0);
     expect(state.vy).toBe(0);
+  });
+
+  test('chooses a clear diagonal side exit when the horizontal exits are blocked', () => {
+    const catObject = {
+      type: CAT_OBJECT_ID,
+      state: {
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        radius: 0.75,
+        catBehavior: CAT_BEHAVIOR_FLEEING,
+      },
+    };
+    const nearbyBalls = [
+      { colorId: 'blue', state: { x: 0, y: -1.7, vx: 0.08, vy: 0, radius: 0.5 } },
+      { colorId: 'red', state: { x: 2.7, y: 0, vx: 0.04, vy: 0, radius: 0.5 } },
+      { colorId: 'green', state: { x: -2.7, y: 0, vx: 0.12, vy: 0, radius: 0.5 } },
+    ];
+
+    const state = resolveCatAvoidanceState(catObject, nearbyBalls, {
+      bounds: { width: 8, height: 8 },
+      catPatiencePercent: 0,
+    });
+
+    expect(state.catBehavior).toBe(CAT_BEHAVIOR_TURNING_INWARD);
+    expect(Math.abs(state.exitDirection.x)).toBeGreaterThan(0.1);
+    expect(Math.abs(state.exitDirection.y)).toBeGreaterThan(0.1);
+    expect(Math.hypot(state.exitDirection.x, state.exitDirection.y)).toBeCloseTo(1, 12);
+    expect(state.exitSpeed).toBeGreaterThan(0);
+  });
+
+  test('uses a UFO route after the speech bubble when no straight side exit is clear', () => {
+    const catObject = {
+      type: CAT_OBJECT_ID,
+      state: {
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        radius: 0.75,
+        catBehavior: CAT_BEHAVIOR_FLEEING,
+      },
+    };
+    const blockingWall = [-3, -2, -1, 0, 1, 2, 3].flatMap((y, index) => [
+      { colorId: `left-${index}`, state: { x: -1.5, y, vx: 0.04, vy: 0, radius: 0.5 } },
+      { colorId: `right-${index}`, state: { x: 1.5, y, vx: 0.04, vy: 0, radius: 0.5 } },
+    ]);
+
+    const state = resolveCatAvoidanceState(catObject, blockingWall, {
+      bounds: { width: 8, height: 8 },
+      catPatiencePercent: 0,
+    });
+
+    expect(state.catBehavior).toBe(CAT_BEHAVIOR_TURNING_INWARD);
+    expect(state.exitRouteType).toBe('ufo');
+    expect(state.vx).toBe(0);
+    expect(state.vy).toBe(0);
+    expect(state.exitDirection).toEqual({ x: 1, y: 0 });
+    expect(state.ufoEntryPoint.x).toBeGreaterThan(state.ufoHoverPoint.x);
+    expect(state.ufoExitPoint.x).toBeLessThan(state.ufoHoverPoint.x);
+    expect(state.exitAnnouncementFramesRemaining).toBeGreaterThan(0);
+    expect(isCatExitSequenceActive(state)).toBe(true);
   });
 
   test('boosts the cat exit speed when it has farther to reach the edge', () => {
@@ -1102,6 +1218,25 @@ describe('resolveCatAvoidanceState', () => {
     expect(state.vx).toBe(0.2);
   });
 
+  test('moves a leaving cat along a selected diagonal side route', () => {
+    const direction = { x: 0.8, y: -0.6 };
+    const state = stepCatRunAwayState({
+      x: 0,
+      y: 0,
+      vx: 0.04,
+      vy: -0.03,
+      radius: 0.75,
+      catBehavior: CAT_BEHAVIOR_LEAVING,
+      exitDirection: direction,
+      exitSpeed: 0.05,
+    }, {
+      speedFactor: 1,
+    });
+
+    expect(state.x).toBeCloseTo(0.04, 12);
+    expect(state.y).toBeCloseTo(-0.03, 12);
+  });
+
   test('keeps the leaving cat moving at a minimum visible speed', () => {
     const state = stepCatRunAwayState({
       x: 0,
@@ -1386,6 +1521,79 @@ describe('resolveCatExitSequenceState', () => {
     expect(state.vx).toBe(-0.04);
     expect(state.vy).toBe(0);
     expect(state.exitAnnouncementFramesRemaining).toBe(0);
+  });
+
+  test('starts the UFO entry after the speech announcement expires', () => {
+    const state = resolveCatExitSequenceState({
+      x: 0,
+      y: 0,
+      vx: 0.02,
+      vy: -0.01,
+      radius: 0.75,
+      catBehavior: CAT_BEHAVIOR_ANNOUNCING,
+      exitRouteType: 'ufo',
+      exitDirection: { x: 1, y: 0 },
+      exitSpeed: 0,
+      exitAnnouncementFramesRemaining: 1,
+      ufoEntryPoint: { x: 5, y: 1 },
+      ufoHoverPoint: { x: 0, y: 1 },
+      ufoExitPoint: { x: -5, y: 1 },
+    }, 0);
+
+    expect(state.catBehavior).toBe(CAT_BEHAVIOR_UFO_ENTERING);
+    expect(state.vx).toBe(0);
+    expect(state.vy).toBe(0);
+    expect(state.exitAnnouncementFramesRemaining).toBe(113);
+  });
+
+  test('progresses the UFO from entering to beaming to leaving', () => {
+    const baseState = {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      radius: 0.75,
+      exitRouteType: 'ufo',
+      exitDirection: { x: 1, y: 0 },
+      exitSpeed: 0,
+      ufoEntryPoint: { x: 5, y: 1 },
+      ufoHoverPoint: { x: 0, y: 1 },
+      ufoExitPoint: { x: -5, y: 1 },
+    };
+
+    const beamingState = resolveCatExitSequenceState({
+      ...baseState,
+      catBehavior: CAT_BEHAVIOR_UFO_ENTERING,
+      exitAnnouncementFramesRemaining: 1,
+    }, 0);
+    const leavingState = resolveCatExitSequenceState({
+      ...beamingState,
+      exitAnnouncementFramesRemaining: 1,
+    }, 0);
+
+    expect(beamingState.catBehavior).toBe(CAT_BEHAVIOR_UFO_BEAMING);
+    expect(beamingState.exitAnnouncementFramesRemaining).toBe(120);
+    expect(leavingState.catBehavior).toBe(CAT_BEHAVIOR_UFO_LEAVING);
+    expect(leavingState.exitAnnouncementFramesRemaining).toBe(113);
+  });
+
+  test('shrinks and fades the cat while the UFO beam lifts it', () => {
+    const visualState = resolveCatUfoVisualState({
+      x: 0,
+      y: 0,
+      radius: 0.75,
+      catBehavior: CAT_BEHAVIOR_UFO_BEAMING,
+      exitAnnouncementFramesRemaining: 60,
+      ufoEntryPoint: { x: 5, y: 1 },
+      ufoHoverPoint: { x: 0, y: 1 },
+      ufoExitPoint: { x: -5, y: 1 },
+    });
+
+    expect(visualState.ufoVisible).toBe(true);
+    expect(visualState.beamVisible).toBe(true);
+    expect(visualState.catLiftY).toBeGreaterThan(0);
+    expect(visualState.catScale).toBeLessThan(1);
+    expect(visualState.catOpacity).toBeLessThan(1);
   });
 });
 

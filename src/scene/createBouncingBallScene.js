@@ -20,6 +20,10 @@ export const CAT_BEHAVIOR_RETREATING = 'retreating';
 export const CAT_BEHAVIOR_TURNING_INWARD = 'turning_inward';
 export const CAT_BEHAVIOR_ANNOUNCING = 'announcing';
 export const CAT_BEHAVIOR_LEAVING = 'leaving';
+export const CAT_BEHAVIOR_UFO_ENTERING = 'ufo_entering';
+export const CAT_BEHAVIOR_UFO_BEAMING = 'ufo_beaming';
+export const CAT_BEHAVIOR_UFO_LEAVING = 'ufo_leaving';
+export const CAT_BEHAVIOR_BEAMING = CAT_BEHAVIOR_UFO_BEAMING;
 
 const VIEW_HEIGHT = 8; // world units shown vertically (orthographic frustum)
 const DEFAULT_SPEED_FACTOR = 1;
@@ -32,6 +36,7 @@ const DEFAULT_FOCUS_EFFECTS_ENABLED = true;
 const DEFAULT_CAT_MOTION_ENABLED = true;
 const DEFAULT_CAT_ACTIVE = true;
 const DEFAULT_CAT_PATIENCE_PERCENT = 20;
+const DEFAULT_CAT_FORCE_UFO_EXIT = false;
 const FOCUS_EFFECT_SMOOTHING = 0.12;
 const FOCUS_FRONT_LIGHT_INTENSITY = 0.58;
 const FOCUS_MATERIAL_EMISSIVE_INTENSITY = 0.18;
@@ -54,6 +59,10 @@ const CAT_MODEL_BASE_URL = '/models/cat/';
 const CAT_MODEL_FILE = '12222_Cat_v1_l3.obj';
 const CAT_MATERIAL_FILE = '12222_Cat_v1_l3.mtl';
 const CAT_MODEL_TARGET_SIZE = 1.65;
+const UFO_MODEL_BASE_URL = '/models/ufo/';
+const UFO_MODEL_FILE = 'UFO2.obj';
+const UFO_MATERIAL_FILE = 'UFO2.mtl';
+const UFO_MODEL_TARGET_SIZE = 1.55;
 const CAT_BOB_DISTANCE = 0.035;
 const CAT_TARGET_YAW_AMOUNT = 0.85;
 const CAT_MOVEMENT_YAW_AMOUNT = 0.3;
@@ -97,6 +106,17 @@ const CAT_MIN_RUN_AWAY_SPEED = 0.03;
 const CAT_MAX_RUN_AWAY_SPEED = 0.075;
 const CAT_RUN_AWAY_DISTANCE_BOOST = 0.025;
 const CAT_RUN_AWAY_DISTANCE_BOOST_START = 0.3;
+const CAT_EXIT_ROUTE_BUFFER = 0.08;
+const CAT_EXIT_LANE_SPACING = 0.35;
+const CAT_EXIT_OPPOSITE_SIDE_PENALTY = 0.25;
+const CAT_UFO_BASE_TRAVEL_FRAMES = 90;
+const CAT_UFO_TRAVEL_SPEED_FACTOR = 0.8;
+const CAT_UFO_ENTER_FRAMES = Math.round(CAT_UFO_BASE_TRAVEL_FRAMES / CAT_UFO_TRAVEL_SPEED_FACTOR);
+const CAT_UFO_BEAM_FRAMES = 120;
+const CAT_UFO_LEAVE_FRAMES = CAT_UFO_ENTER_FRAMES;
+const CAT_UFO_SCREEN_MARGIN = 1.2;
+const CAT_UFO_HOVER_OFFSET = 1.65;
+const CAT_UFO_Z_OFFSET = 2.2;
 
 export const BALL_COLOR_OPTIONS = [
   { id: 'yellow', label: 'Yellow', value: 0xffdf2e, css: '#ffdf2e' },
@@ -208,6 +228,10 @@ export function resolveSceneFocusTarget(
   { catExitSequenceActive = false, catObject = null } = {},
 ) {
   if (catExitSequenceActive && catObject && activeObjects.includes(catObject)) {
+    if (isCatUfoSequenceActive(catObject.state) && catObject.ufoFocusTarget) {
+      return catObject.ufoFocusTarget;
+    }
+
     return catObject;
   }
 
@@ -642,6 +666,225 @@ function resolveCatExitDirection(state, bounds) {
   return rightDistance <= leftDistance ? { x: 1, y: 0 } : { x: -1, y: 0 };
 }
 
+function resolveCatExitTarget(state, bounds, directionX, targetY = state.y) {
+  const halfWidth = bounds.width / 2;
+  const halfHeight = Math.max(0, bounds.height / 2 - state.radius);
+
+  return {
+    x: directionX * (halfWidth + state.radius),
+    y: clamp(targetY, -halfHeight, halfHeight),
+  };
+}
+
+function isBallBlockingExitSegment(state, ballState, target, buffer = CAT_EXIT_ROUTE_BUFFER) {
+  const segmentX = target.x - state.x;
+  const segmentY = target.y - state.y;
+  const segmentLengthSquared = (segmentX * segmentX) + (segmentY * segmentY);
+  if (segmentLengthSquared <= CAT_AVOIDANCE_EPSILON) {
+    return false;
+  }
+
+  const ballX = ballState.x - state.x;
+  const ballY = ballState.y - state.y;
+  const projection = ((ballX * segmentX) + (ballY * segmentY)) / segmentLengthSquared;
+  if (projection <= 0 || projection >= 1) {
+    return false;
+  }
+
+  const segmentLength = Math.sqrt(segmentLengthSquared);
+  if (projection * segmentLength <= state.radius * 0.75) {
+    return false;
+  }
+
+  const closestX = state.x + segmentX * projection;
+  const closestY = state.y + segmentY * projection;
+  const clearance = state.radius + ballState.radius + buffer;
+
+  return Math.hypot(ballState.x - closestX, ballState.y - closestY) < clearance;
+}
+
+function isCatExitRouteClear(state, balls, target) {
+  return !balls.some((ball) => isBallBlockingExitSegment(state, ball.state, target));
+}
+
+function getCatExitLaneYTargets(state, bounds) {
+  const halfHeight = Math.max(0, bounds.height / 2 - state.radius);
+  const currentY = clamp(state.y, -halfHeight, halfHeight);
+  const yTargets = [currentY];
+  const laneCount = Math.max(1, Math.ceil((halfHeight * 2) / CAT_EXIT_LANE_SPACING));
+
+  for (let index = 0; index <= laneCount; index += 1) {
+    const y = -halfHeight + ((halfHeight * 2 * index) / laneCount);
+    if (!yTargets.some((targetY) => Math.abs(targetY - y) <= CAT_AVOIDANCE_EPSILON)) {
+      yTargets.push(y);
+    }
+  }
+
+  return yTargets.sort((a, b) => Math.abs(a - currentY) - Math.abs(b - currentY));
+}
+
+function resolveCatExitRoute(state, balls, bounds) {
+  const primaryDirection = resolveCatExitDirection(state, bounds);
+  if (!bounds?.width || !bounds?.height || balls.length === 0) {
+    return {
+      type: 'side',
+      direction: primaryDirection,
+    };
+  }
+
+  const directTarget = resolveCatExitTarget(state, bounds, primaryDirection.x, state.y);
+  if (isCatExitRouteClear(state, balls, directTarget)) {
+    return {
+      type: 'side',
+      direction: primaryDirection,
+    };
+  }
+
+  const sideDirections = [primaryDirection.x, -primaryDirection.x];
+  const yTargets = getCatExitLaneYTargets(state, bounds);
+  let bestRoute = null;
+
+  sideDirections.forEach((directionX, sideIndex) => {
+    yTargets.forEach((targetY) => {
+      const target = resolveCatExitTarget(state, bounds, directionX, targetY);
+      if (!isCatExitRouteClear(state, balls, target)) {
+        return;
+      }
+
+      const dx = target.x - state.x;
+      const dy = target.y - state.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance <= CAT_AVOIDANCE_EPSILON) {
+        return;
+      }
+
+      const verticalShift = Math.abs(target.y - state.y);
+      const score = distance
+        + verticalShift
+        + sideIndex * bounds.width * CAT_EXIT_OPPOSITE_SIDE_PENALTY;
+      const route = {
+        type: 'side',
+        direction: {
+          x: dx / distance,
+          y: dy / distance,
+        },
+        score,
+      };
+
+      if (!bestRoute || route.score < bestRoute.score) {
+        bestRoute = route;
+      }
+    });
+  });
+
+  return bestRoute ?? { type: 'ufo' };
+}
+
+function easeInOut(value) {
+  const amount = clamp(value, 0, 1);
+  return amount * amount * (3 - (2 * amount));
+}
+
+function lerp(start, end, amount) {
+  return start + (end - start) * amount;
+}
+
+function lerpPoint(start, end, amount) {
+  return {
+    x: lerp(start.x, end.x, amount),
+    y: lerp(start.y, end.y, amount),
+  };
+}
+
+function getUfoPhaseProgress(state, totalFrames) {
+  const remaining = Math.floor(state.exitAnnouncementFramesRemaining ?? totalFrames);
+  return 1 - clamp(remaining / totalFrames, 0, 1);
+}
+
+function resolveCatUfoPath(state, bounds, entryDirection) {
+  const halfWidth = bounds?.width ? bounds.width / 2 : VIEW_HEIGHT / 2;
+  const halfHeight = bounds?.height ? bounds.height / 2 : VIEW_HEIGHT / 2;
+  const hoverY = clamp(
+    state.y + state.radius * CAT_UFO_HOVER_OFFSET,
+    -halfHeight + state.radius,
+    halfHeight - state.radius * 0.4,
+  );
+  const entryX = entryDirection.x < 0
+    ? -halfWidth - CAT_UFO_SCREEN_MARGIN
+    : halfWidth + CAT_UFO_SCREEN_MARGIN;
+
+  return {
+    ufoEntryPoint: { x: entryX, y: hoverY },
+    ufoHoverPoint: { x: state.x, y: hoverY },
+    ufoExitPoint: { x: -entryX, y: hoverY },
+  };
+}
+
+function isCatUfoSequenceActive(state) {
+  return state?.catBehavior === CAT_BEHAVIOR_UFO_ENTERING
+    || state?.catBehavior === CAT_BEHAVIOR_UFO_BEAMING
+    || state?.catBehavior === CAT_BEHAVIOR_UFO_LEAVING;
+}
+
+export function resolveCatUfoVisualState(state) {
+  const fallbackHover = {
+    x: state.x ?? 0,
+    y: (state.y ?? 0) + (state.radius ?? DEFAULT_CAT_RADIUS) * CAT_UFO_HOVER_OFFSET,
+  };
+  const entry = state.ufoEntryPoint ?? fallbackHover;
+  const hover = state.ufoHoverPoint ?? fallbackHover;
+  const exit = state.ufoExitPoint ?? hover;
+  const base = {
+    ufoVisible: false,
+    beamVisible: false,
+    ufoX: hover.x,
+    ufoY: hover.y,
+    catLiftY: 0,
+    catScale: 1,
+    catOpacity: 1,
+    beamOpacity: 0,
+  };
+
+  if (state.catBehavior === CAT_BEHAVIOR_UFO_ENTERING) {
+    const progress = easeInOut(getUfoPhaseProgress(state, CAT_UFO_ENTER_FRAMES));
+    const point = lerpPoint(entry, hover, progress);
+    return {
+      ...base,
+      ufoVisible: true,
+      ufoX: point.x,
+      ufoY: point.y,
+    };
+  }
+
+  if (state.catBehavior === CAT_BEHAVIOR_UFO_BEAMING) {
+    const progress = easeInOut(getUfoPhaseProgress(state, CAT_UFO_BEAM_FRAMES));
+    return {
+      ...base,
+      ufoVisible: true,
+      beamVisible: true,
+      catLiftY: (state.radius ?? DEFAULT_CAT_RADIUS) * 1.75 * progress,
+      catScale: lerp(1, 0.12, progress),
+      catOpacity: lerp(1, 0, progress),
+      beamOpacity: lerp(0.18, 0.34, progress),
+    };
+  }
+
+  if (state.catBehavior === CAT_BEHAVIOR_UFO_LEAVING) {
+    const progress = easeInOut(getUfoPhaseProgress(state, CAT_UFO_LEAVE_FRAMES));
+    const point = lerpPoint(hover, exit, progress);
+    return {
+      ...base,
+      ufoVisible: true,
+      ufoX: point.x,
+      ufoY: point.y,
+      catScale: 0.12,
+      catOpacity: 0,
+    };
+  }
+
+  return base;
+}
+
 function resolveMedianBallSpeed(balls) {
   if (balls.length === 0) {
     return 0;
@@ -663,13 +906,16 @@ function resolveCatExitDistanceToEdge(state, bounds, direction) {
   }
 
   const halfWidth = bounds.width / 2;
-  return direction.x < 0
-    ? state.x + halfWidth
-    : halfWidth - state.x;
+  const resolvedDirection = normalizeDirection(direction.x, direction.y ?? 0);
+  if (Math.abs(resolvedDirection.x) <= CAT_AVOIDANCE_EPSILON) {
+    return 0;
+  }
+
+  const edgeX = resolvedDirection.x < 0 ? -halfWidth : halfWidth;
+  return Math.max(0, (edgeX - state.x) / resolvedDirection.x);
 }
 
-function resolveCatRunAwaySpeed(balls, state, bounds) {
-  const direction = resolveCatExitDirection(state, bounds);
+function resolveCatRunAwaySpeed(balls, state, bounds, direction = resolveCatExitDirection(state, bounds)) {
   const baseSpeed = resolveMedianBallSpeed(balls) * CAT_RUN_AWAY_SPEED_FACTOR;
   const halfWidth = bounds?.width ? bounds.width / 2 : 0;
   const distanceToEdge = resolveCatExitDistanceToEdge(state, bounds, direction);
@@ -691,16 +937,42 @@ function resolveCatRunAwaySpeed(balls, state, bounds) {
 }
 
 function resolveCatRunAwayState(state, bounds, {
+  balls = [],
+  forceUfoExit = false,
   speed,
 } = {}) {
-  const direction = resolveCatExitDirection(state, bounds);
-  const resolvedSpeed = Math.max(0, speed ?? 0);
+  const route = forceUfoExit ? { type: 'ufo' } : resolveCatExitRoute(state, balls, bounds);
+  if (route.type === 'ufo') {
+    const direction = resolveCatExitDirection(state, bounds);
+    return {
+      ...state,
+      vx: 0,
+      vy: 0,
+      catBehavior: CAT_BEHAVIOR_TURNING_INWARD,
+      exitRouteType: 'ufo',
+      exitDirection: direction,
+      exitSpeed: 0,
+      exitAnnouncementFramesRemaining: CAT_EXIT_ANNOUNCEMENT_FRAMES,
+      escapeTarget: null,
+      lookTargetState: null,
+      ...resolveCatUfoPath(state, bounds, direction),
+    };
+  }
+
+  const direction = route.direction;
+  const resolvedSpeed = Math.max(0, speed ?? resolveCatRunAwaySpeed(
+    balls,
+    state,
+    bounds,
+    direction,
+  ));
 
   return {
     ...state,
     vx: 0,
     vy: 0,
     catBehavior: CAT_BEHAVIOR_TURNING_INWARD,
+    exitRouteType: 'side',
     exitDirection: direction,
     exitSpeed: resolvedSpeed,
     exitAnnouncementFramesRemaining: CAT_EXIT_ANNOUNCEMENT_FRAMES,
@@ -712,7 +984,8 @@ function resolveCatRunAwayState(state, bounds, {
 export function isCatExitSequenceActive(state) {
   return state?.catBehavior === CAT_BEHAVIOR_TURNING_INWARD
     || state?.catBehavior === CAT_BEHAVIOR_ANNOUNCING
-    || state?.catBehavior === CAT_BEHAVIOR_LEAVING;
+    || state?.catBehavior === CAT_BEHAVIOR_LEAVING
+    || isCatUfoSequenceActive(state);
 }
 
 function resolveCatInwardExitYaw(state) {
@@ -721,11 +994,14 @@ function resolveCatInwardExitYaw(state) {
 }
 
 function resolveCatOutwardExitVelocity(state) {
-  const exitX = state.exitDirection?.x === -1 ? -1 : 1;
+  const exitDirection = normalizeDirection(
+    state.exitDirection?.x ?? 1,
+    state.exitDirection?.y ?? 0,
+  );
   const speed = Math.max(0, state.exitSpeed ?? 0);
   return {
-    vx: exitX * speed,
-    vy: 0,
+    vx: exitDirection.x * speed,
+    vy: exitDirection.y * speed,
   };
 }
 
@@ -733,6 +1009,53 @@ export function resolveCatExitSequenceState(state, smoothedTargetYaw, {
   turnThreshold = CAT_EXIT_INWARD_TURN_THRESHOLD,
   announcementFrames = CAT_EXIT_ANNOUNCEMENT_FRAMES,
 } = {}) {
+  if (isCatUfoSequenceActive(state)) {
+    const phaseFrames = state.catBehavior === CAT_BEHAVIOR_UFO_ENTERING
+      ? CAT_UFO_ENTER_FRAMES
+      : state.catBehavior === CAT_BEHAVIOR_UFO_BEAMING
+        ? CAT_UFO_BEAM_FRAMES
+        : CAT_UFO_LEAVE_FRAMES;
+    const nextFramesRemaining = Math.max(
+      0,
+      Math.floor(state.exitAnnouncementFramesRemaining ?? phaseFrames) - 1,
+    );
+    if (nextFramesRemaining > 0) {
+      return {
+        ...state,
+        vx: 0,
+        vy: 0,
+        exitAnnouncementFramesRemaining: nextFramesRemaining,
+      };
+    }
+
+    if (state.catBehavior === CAT_BEHAVIOR_UFO_ENTERING) {
+      return {
+        ...state,
+        vx: 0,
+        vy: 0,
+        catBehavior: CAT_BEHAVIOR_UFO_BEAMING,
+        exitAnnouncementFramesRemaining: CAT_UFO_BEAM_FRAMES,
+      };
+    }
+
+    if (state.catBehavior === CAT_BEHAVIOR_UFO_BEAMING) {
+      return {
+        ...state,
+        vx: 0,
+        vy: 0,
+        catBehavior: CAT_BEHAVIOR_UFO_LEAVING,
+        exitAnnouncementFramesRemaining: CAT_UFO_LEAVE_FRAMES,
+      };
+    }
+
+    return {
+      ...state,
+      vx: 0,
+      vy: 0,
+      exitAnnouncementFramesRemaining: 0,
+    };
+  }
+
   if (state.catBehavior === CAT_BEHAVIOR_TURNING_INWARD) {
     const targetYaw = resolveCatInwardExitYaw(state);
     if (Math.abs(smoothedTargetYaw - targetYaw) > turnThreshold) {
@@ -772,6 +1095,16 @@ export function resolveCatExitSequenceState(state, smoothedTargetYaw, {
     };
   }
 
+  if (state.exitRouteType === 'ufo') {
+    return {
+      ...state,
+      vx: 0,
+      vy: 0,
+      catBehavior: CAT_BEHAVIOR_UFO_ENTERING,
+      exitAnnouncementFramesRemaining: CAT_UFO_ENTER_FRAMES,
+    };
+  }
+
   return {
     ...state,
     ...resolveCatOutwardExitVelocity(state),
@@ -782,7 +1115,10 @@ export function resolveCatExitSequenceState(state, smoothedTargetYaw, {
 
 export function stepCatRunAwayState(state, { speedFactor = 1 } = {}) {
   if (state.exitDirection && Number.isFinite(state.exitSpeed)) {
-    const exitX = state.exitDirection.x === -1 ? -1 : 1;
+    const exitDirection = normalizeDirection(
+      state.exitDirection.x,
+      state.exitDirection.y ?? 0,
+    );
     const resolvedSpeedFactor = Number.isFinite(speedFactor)
       ? Math.max(0, speedFactor)
       : 1;
@@ -794,8 +1130,8 @@ export function stepCatRunAwayState(state, { speedFactor = 1 } = {}) {
 
     return {
       ...state,
-      x: state.x + exitX * stepSpeed,
-      y: state.y,
+      x: state.x + exitDirection.x * stepSpeed,
+      y: state.y + exitDirection.y * stepSpeed,
     };
   }
 
@@ -1149,6 +1485,7 @@ export function resolveCatAvoidanceState(object, balls, {
   cornerRetreatDistancePenalty = CAT_CORNER_RETREAT_DISTANCE_PENALTY,
   agitationWindowFrames = CAT_AGITATION_WINDOW_FRAMES,
   catPatiencePercent = DEFAULT_CAT_PATIENCE_PERCENT,
+  forceUfoExit = DEFAULT_CAT_FORCE_UFO_EXIT,
 } = {}) {
   if (object.type !== CAT_OBJECT_ID) {
     return object.state;
@@ -1202,7 +1539,8 @@ export function resolveCatAvoidanceState(object, balls, {
     )
   ) {
     return resolveCatRunAwayState(stateWithTimers, bounds, {
-      speed: resolveCatRunAwaySpeed(balls, stateWithTimers, bounds),
+      balls,
+      forceUfoExit,
     });
   }
 
@@ -1442,6 +1780,10 @@ export function resolveSceneSettings(options = {}) {
       0,
       100,
     ),
+    catForceUfoExit: readBooleanOption(
+      options.getCatForceUfoExit,
+      DEFAULT_CAT_FORCE_UFO_EXIT,
+    ),
     facesFollowPointer: lookMode === LOOK_MODE_CURSOR,
   };
 }
@@ -1526,6 +1868,115 @@ function createCatPlaceholder(material) {
   return placeholder;
 }
 
+function createCatUfo(shouldSkipAttach) {
+  const group = new THREE.Group();
+  const modelAnchor = new THREE.Group();
+  const fallbackModel = new THREE.Group();
+  group.visible = false;
+
+  const beamMaterial = new THREE.MeshBasicMaterial({
+    color: 0xa8f5ff,
+    transparent: true,
+    opacity: 0.2,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const beam = new THREE.Mesh(
+    new THREE.ConeGeometry(0.78, 2.25, 32, 1, true),
+    beamMaterial,
+  );
+  beam.visible = false;
+  beam.position.y = -0.95;
+
+  const saucerMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd7d7d7,
+    emissive: 0x2f3b46,
+    emissiveIntensity: 0.24,
+    metalness: 0.55,
+    roughness: 0.28,
+  });
+  const saucer = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.6, 0.78, 0.12, 40),
+    saucerMaterial,
+  );
+
+  const domeMaterial = new THREE.MeshStandardMaterial({
+    color: 0xcff8ff,
+    emissive: 0x66d9ff,
+    emissiveIntensity: 0.32,
+    roughness: 0.18,
+    metalness: 0.12,
+  });
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.32, 28, 14), domeMaterial);
+  dome.scale.y = 0.42;
+  dome.position.y = 0.1;
+
+  fallbackModel.add(saucer, dome);
+  modelAnchor.add(fallbackModel);
+  group.add(beam, modelAnchor);
+
+  loadUfoModel(modelAnchor, fallbackModel, shouldSkipAttach).catch((error) => {
+    console.warn('Could not load UFO model asset', error);
+  });
+
+  return { group, beam, beamMaterial };
+}
+
+function normalizeUfoModel(object) {
+  const ufoModel = new THREE.Group();
+  ufoModel.add(object);
+
+  ufoModel.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(ufoModel);
+  const size = box.getSize(new THREE.Vector3());
+  const maxSize = Math.max(size.x, size.y, size.z) || 1;
+  ufoModel.scale.setScalar(UFO_MODEL_TARGET_SIZE / maxSize);
+
+  ufoModel.updateMatrixWorld(true);
+  const scaledBox = new THREE.Box3().setFromObject(ufoModel);
+  const center = scaledBox.getCenter(new THREE.Vector3());
+  ufoModel.position.sub(center);
+
+  return ufoModel;
+}
+
+function brightenUfoModel(object) {
+  object.traverse((child) => {
+    if (!child.isMesh || !child.material) {
+      return;
+    }
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => {
+      if (material.emissive && material.color) {
+        material.emissive.copy(material.color);
+        material.emissiveIntensity = 0.12;
+      }
+      material.needsUpdate = true;
+    });
+  });
+}
+
+async function loadUfoModel(modelAnchor, fallbackModel, shouldSkipAttach) {
+  const materials = await new MTLLoader()
+    .setPath(UFO_MODEL_BASE_URL)
+    .loadAsync(UFO_MATERIAL_FILE);
+  materials.preload();
+
+  const object = await new OBJLoader()
+    .setMaterials(materials)
+    .setPath(UFO_MODEL_BASE_URL)
+    .loadAsync(UFO_MODEL_FILE);
+
+  if (shouldSkipAttach()) {
+    return;
+  }
+
+  brightenUfoModel(object);
+  fallbackModel.visible = false;
+  modelAnchor.add(normalizeUfoModel(object));
+}
+
 function normalizeCatModel(object) {
   const catModel = new THREE.Group();
   // This OBJ is Z-up. Rotate it into Three.js's Y-up world before measuring.
@@ -1602,9 +2053,11 @@ function createCatObject(shouldSkipAttach) {
     DEFAULT_CAT_RADIUS * 5.5,
     1.7,
   );
+  const ufo = createCatUfo(shouldSkipAttach);
   focusFrontLight.position.set(0, 0, DEFAULT_CAT_RADIUS * 3.2);
   root.add(lookGroup);
   root.add(focusFrontLight);
+  root.add(ufo.group);
   lookGroup.add(modelAnchor);
 
   const placeholderMaterial = new THREE.MeshStandardMaterial({
@@ -1627,6 +2080,14 @@ function createCatObject(shouldSkipAttach) {
     root,
     lookGroup,
     modelAnchor,
+    ufoGroup: ufo.group,
+    ufoBeam: ufo.beam,
+    ufoBeamMaterial: ufo.beamMaterial,
+    ufoFocusTarget: {
+      colorId: 'ufo',
+      type: 'ufo',
+      state: { x: 0, y: 0, radius: DEFAULT_CAT_RADIUS },
+    },
     focusFrontLight,
     focusFrontLightIntensity: CAT_BASE_FRONT_LIGHT_INTENSITY,
     focusMaterialEmissiveIntensity: CAT_BASE_MATERIAL_EMISSIVE_INTENSITY,
@@ -1651,6 +2112,10 @@ function createCatObject(shouldSkipAttach) {
       exitDirection: null,
       exitSpeed: 0,
       exitAnnouncementFramesRemaining: 0,
+      exitRouteType: 'side',
+      ufoEntryPoint: null,
+      ufoHoverPoint: null,
+      ufoExitPoint: null,
     },
   };
 }
@@ -1736,7 +2201,14 @@ export function createBouncingBallScene(canvas, options = {}) {
     catObject.state.exitDirection = null;
     catObject.state.exitSpeed = 0;
     catObject.state.exitAnnouncementFramesRemaining = 0;
+    catObject.state.exitRouteType = 'side';
+    catObject.state.ufoEntryPoint = null;
+    catObject.state.ufoHoverPoint = null;
+    catObject.state.ufoExitPoint = null;
     catObject.smoothedTargetYaw = 0;
+    catObject.ufoGroup.visible = false;
+    catObject.ufoBeam.visible = false;
+    catObject.modelAnchor.scale.setScalar(1);
     catRunAwayNotified = false;
     hideCatSpeechBubble();
   }
@@ -1904,6 +2376,21 @@ export function createBouncingBallScene(canvas, options = {}) {
     ball.lookGroup.quaternion.slerp(targetQuaternion, settings.tiltSmoothing);
   }
 
+  function setModelOpacity(modelAnchor, opacity) {
+    modelAnchor.traverse((child) => {
+      if (!child.isMesh || !child.material) {
+        return;
+      }
+
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      materials.forEach((material) => {
+        material.opacity = opacity;
+        material.transparent = opacity < 1;
+        material.needsUpdate = true;
+      });
+    });
+  }
+
   function animateSceneObject(object, elapsedSeconds, settings) {
     if (object.type !== CAT_OBJECT_ID) {
       return;
@@ -1926,9 +2413,36 @@ export function createBouncingBallScene(canvas, options = {}) {
       settings,
       object.smoothedTargetYaw,
     );
-    object.modelAnchor.position.y = transform.bobY;
+    const ufoVisualState = resolveCatUfoVisualState(object.state);
+    object.modelAnchor.position.y = transform.bobY + ufoVisualState.catLiftY;
     object.modelAnchor.rotation.y = transform.rotationY;
     object.modelAnchor.rotation.z = transform.rotationZ;
+    object.modelAnchor.scale.setScalar(ufoVisualState.catScale);
+    setModelOpacity(object.modelAnchor, ufoVisualState.catOpacity);
+
+    if (object.ufoGroup) {
+      const hoverBob = ufoVisualState.ufoVisible
+        ? Math.sin(elapsedSeconds * 3.4) * 0.035
+        : 0;
+      object.ufoGroup.visible = ufoVisualState.ufoVisible;
+      object.ufoGroup.position.set(
+        ufoVisualState.ufoX - object.state.x,
+        ufoVisualState.ufoY - object.state.y + hoverBob,
+        CAT_UFO_Z_OFFSET,
+      );
+      object.ufoGroup.rotation.z = ufoVisualState.ufoVisible
+        ? Math.sin(elapsedSeconds * 2.2) * 0.035
+        : 0;
+      object.ufoBeam.visible = ufoVisualState.beamVisible;
+      object.ufoBeamMaterial.opacity = ufoVisualState.beamVisible
+        ? ufoVisualState.beamOpacity + Math.sin(elapsedSeconds * 8) * 0.05
+        : 0;
+      if (object.ufoFocusTarget) {
+        object.ufoFocusTarget.state.x = ufoVisualState.ufoX;
+        object.ufoFocusTarget.state.y = ufoVisualState.ufoY;
+        object.ufoFocusTarget.state.radius = object.state.radius;
+      }
+    }
   }
 
   function advanceCatExitSequenceAfterAnimation(settings) {
@@ -1963,6 +2477,7 @@ export function createBouncingBallScene(canvas, options = {}) {
       catObject.state = resolveCatAvoidanceState(catObject, activeBalls, {
         bounds,
         catPatiencePercent: settings.catPatiencePercent,
+        forceUfoExit: settings.catForceUfoExit,
       });
     }
     const catExitSequenceActive = catActive && isCatExitSequenceActive(catObject.state);
@@ -2000,6 +2515,21 @@ export function createBouncingBallScene(canvas, options = {}) {
     const halfHeight = bounds.height / 2;
     activeObjects.forEach((object) => {
       const { radius } = object.state;
+      if (object.type === CAT_OBJECT_ID && isCatUfoSequenceActive(object.state)) {
+        object.state.x = clamp(object.state.x, -halfWidth + radius, halfWidth - radius);
+        object.state.y = clamp(object.state.y, -halfHeight + radius, halfHeight - radius);
+        object.root.position.set(object.state.x, object.state.y, 0);
+        if (
+          !catRunAwayNotified
+          && object.state.catBehavior === CAT_BEHAVIOR_UFO_LEAVING
+          && object.state.exitAnnouncementFramesRemaining <= 0
+        ) {
+          catRunAwayNotified = true;
+          options.onCatRunAway?.();
+        }
+        return;
+      }
+
       if (object.type === CAT_OBJECT_ID && object.state.catBehavior === CAT_BEHAVIOR_LEAVING) {
         object.root.position.set(object.state.x, object.state.y, 0);
         if (!catRunAwayNotified && isCatOutsideScene(object.state, bounds)) {
