@@ -13,6 +13,7 @@ import {
   CAT_OBJECT_ID,
   LOOK_MODE_CURSOR,
   LOOK_MODE_FOCUS,
+  createSoftTractorBeamMaterial,
   getActiveBalls,
   getActiveSceneObjects,
   getFocusTarget,
@@ -32,6 +33,7 @@ import {
   resolveSceneSettings,
   resolveSceneFocusTarget,
   resolveSceneObjectCollisions,
+  setTractorBeamOpacity,
   isCatExitSequenceActive,
   isCatOutsideScene,
   shouldOrientObject,
@@ -1594,6 +1596,41 @@ describe('resolveCatExitSequenceState', () => {
     expect(visualState.catLiftY).toBeGreaterThan(0);
     expect(visualState.catScale).toBeLessThan(1);
     expect(visualState.catOpacity).toBeLessThan(1);
+  });
+
+  test('keeps the beamed cat below a UFO that is clamped near the top edge', () => {
+    const visualState = resolveCatUfoVisualState({
+      x: 0,
+      y: 3.55,
+      radius: 0.75,
+      catBehavior: CAT_BEHAVIOR_UFO_BEAMING,
+      exitAnnouncementFramesRemaining: 0,
+      ufoEntryPoint: { x: 5, y: 3.7 },
+      ufoHoverPoint: { x: 0, y: 3.7 },
+      ufoExitPoint: { x: -5, y: 3.7 },
+    });
+
+    expect(3.55 + visualState.catLiftY).toBeLessThan(3.7);
+  });
+});
+
+describe('tractor beam material', () => {
+  test('uses a shader alpha falloff so the beam edges fade out', () => {
+    const material = createSoftTractorBeamMaterial();
+
+    expect(material.isShaderMaterial).toBe(true);
+    expect(material.transparent).toBe(true);
+    expect(material.depthWrite).toBe(false);
+    expect(material.fragmentShader).toContain('edgeFade');
+    expect(material.fragmentShader).toContain('smoothstep');
+  });
+
+  test('updates the beam opacity through its shader uniform', () => {
+    const material = createSoftTractorBeamMaterial();
+
+    setTractorBeamOpacity(material, 0.27);
+
+    expect(material.uniforms.opacity.value).toBe(0.27);
   });
 });
 
